@@ -1,0 +1,6 @@
+{
+  "name": "Gemini OCR",
+  "description": "Real-time on-device OCR and subtitle translation companion app for Android.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
