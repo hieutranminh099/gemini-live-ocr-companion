@@ -118,6 +118,10 @@ class MainActivity : ComponentActivity() {
         val count by SessionState.blocks.collectAsState()
         val cached by SessionState.cacheHits.collectAsState()
         val preloadedHits by SessionState.preloadedHits.collectAsState()
+        val fuzzyHits by SessionState.fuzzyHits.collectAsState()
+        val savedApiCalls by SessionState.savedApiCalls.collectAsState()
+        val noiseFiltered by SessionState.noiseFiltered.collectAsState()
+        val activeModelName by SessionState.activeModelName.collectAsState()
         val ocrFrames by SessionState.ocrFrames.collectAsState()
         val ocrArea by SessionState.ocrArea.collectAsState()
         val lastOcr by SessionState.lastOcr.collectAsState()
@@ -132,6 +136,8 @@ class MainActivity : ComponentActivity() {
         var turboLatency by remember { mutableStateOf(settings.turboLatency) }
         var preloadedDialogueEnabled by remember { mutableStateOf(settings.preloadedDialogueEnabled) }
         var fastOcrDownscale by remember { mutableStateOf(settings.fastOcrDownscale) }
+        var costSavingMode by remember { mutableStateOf(settings.costSavingMode) }
+        var stabilizeBeforeCloud by remember { mutableStateOf(settings.stabilizeBeforeCloud) }
         var preparingModel by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
             launch(Dispatchers.Default) {
@@ -147,6 +153,8 @@ class MainActivity : ComponentActivity() {
             turboLatency = settings.turboLatency
             preloadedDialogueEnabled = settings.preloadedDialogueEnabled
             fastOcrDownscale = settings.fastOcrDownscale
+            costSavingMode = settings.costSavingMode
+            stabilizeBeforeCloud = settings.stabilizeBeforeCloud
         }
         var paired by remember { mutableStateOf(settings.token.isNotBlank()) }
         LaunchedEffect(running, status) { paired = settings.token.isNotBlank() }
@@ -217,16 +225,35 @@ class MainActivity : ComponentActivity() {
                                         Text("Dịch độc lập ngay trên điện thoại (≤ 1s)", color = Mint, fontWeight = FontWeight.SemiBold)
                                     }
                                 }
+                                if (running) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            startService(Intent(this@MainActivity, ScreenCaptureService::class.java).setAction("RETRANSLATE_PRO"))
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("retranslate_high_precision_button"),
+                                        shape = RoundedCornerShape(14.dp)
+                                    ) {
+                                        Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = Color(0xFFF0B976))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Dịch lại với chế độ chính xác cao (Gemini Pro)", color = Color(0xFFF0B976), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                    }
+                                }
                                 Text(if (Build.VERSION.SDK_INT >= 34 && !settings.fullScreen) "Chọn “Một ứng dụng” trong hộp thoại Android, rồi chọn game hoặc ứng dụng cần dịch." else "Cho phép thu toàn màn hình, rồi chuyển sang ứng dụng cần dịch.", color = Muted, fontSize = 12.sp)
                             }
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Metric(if (connected && connectionMode != "standalone") "Máy chủ" else "Độ trễ dịch", "$latency ms", Modifier.weight(1f))
                             Metric("OCR cục bộ", "$ocr ms", Modifier.weight(1f))
-                            Metric("Kho/Cache", if (count == 0) "—" else "${cached * 100 / count}%", Modifier.weight(1f))
+                            Metric("Tiết kiệm API", "$savedApiCalls lượt", Modifier.weight(1f))
                         }
-                        if (running && preloadedHits > 0) Text("Đã khớp tức thì $preloadedHits câu từ Kho hội thoại Tiếng Trung (<1ms)", color = Mint, fontSize = 12.sp)
-                        if (running && instantMs > 0) Text("Bản dịch tức thì trên máy (Kho/ML Kit): $instantMs ms", color = Mint, fontSize = 12.sp)
+                        if (running && (preloadedHits > 0 || fuzzyHits > 0 || noiseFiltered > 0)) {
+                            Text(
+                                "Kho thoại/UI (<1ms): $preloadedHits • Khớp gần đúng (Fuzzy 90%+): $fuzzyHits • Lọc rác OCR: $noiseFiltered",
+                                color = Mint,
+                                fontSize = 12.sp
+                            )
+                        }
+                        if (running && instantMs > 0) Text("Bản dịch tức thì trên máy (Kho/ML Kit): $instantMs ms • Model đám mây: $activeModelName", color = Mint, fontSize = 12.sp)
                         if (running) Text("Đã đọc $ocrFrames khung • OCR $ocrArea% diện tích màn hình", color = Muted, fontSize = 12.sp)
                         if (running && timings.isNotEmpty()) Text(timings, color = Muted, fontSize = 12.sp)
                         if (running && networkRtt > 0) Text("Khứ hồi Android ↔ Windows: $networkRtt ms", color = Muted, fontSize = 12.sp)
@@ -235,8 +262,8 @@ class MainActivity : ComponentActivity() {
                             Text("OCR: $lastOcr", color = Muted, fontSize = 14.sp)
                             Text(if (lastTranslation.isBlank()) "Chưa có kết quả • Xem trạng thái ở trên" else lastTranslation, color = Mint, fontSize = 15.sp)
                         }
-                        Section("Chế độ Độc lập & Tối ưu ≤ 1s") {
-                            Text("Tự động dịch trên điện thoại khi không kết nối máy tính. Khớp tức thì (<1ms) với Kho hội thoại Tiếng Trung nạp sẵn, dịch ML Kit On-Device (<150ms) và tinh chỉnh ngữ cảnh bằng Gemini Flash-Lite.", color = Muted, fontSize = 13.sp)
+                        Section("Chế độ Độc lập & Tối ưu 5 Tầng (≤ 1s · Tiết kiệm Token)") {
+                            Text("Kiến trúc 5 tầng: (1) Định tuyến Flash/Pro thông minh, (2) Cache + Fuzzy Match 90–95% + Từ điển UI Offline, (3) Lọc rác OCR & Gom cụm đánh số, (4) Rút gọn Prompt + Khóa 100–250 token + Nén 1–2 câu ngữ cảnh, (5) Hybrid ML Kit Offline + Gemini khi gặp câu phức tạp.", color = Muted, fontSize = 13.sp)
                             Choice(
                                 label = "Chế độ hoạt động",
                                 values = linkedMapOf("auto" to "Tự động (Độc lập ⇄ PC)", "standalone" to "Độc lập trên điện thoại", "pc" to "Chỉ kết nối PC"),
@@ -258,6 +285,30 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 standaloneEngine = it
                                 settings.standaloneEngine = it
+                            }
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Tối ưu chi phí Gemini 5 tầng (Smart Cost Saver)", fontWeight = FontWeight.Medium)
+                                    Text("Tự động dùng ML Kit Offline / Fuzzy Match 90%+ cho câu ngắn; chỉ gọi Gemini Flash/Pro khi gặp câu dài, cổ văn/tiên hiệp hoặc bấm nút PRO.", color = Muted, fontSize = 12.sp)
+                                }
+                                Switch(
+                                    checked = costSavingMode,
+                                    onCheckedChange = { costSavingMode = it; settings.costSavingMode = it },
+                                    enabled = !running,
+                                    modifier = Modifier.testTag("cost_saving_mode_switch")
+                                )
+                            }
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Kiểm tra ổn định 2 khung hình trước khi gọi Cloud", fontWeight = FontWeight.Medium)
+                                    Text("Tránh gửi request lên đám mây khi màn hình đang cuộn hoặc mờ; bản dịch Offline vẫn phản hồi tức thì.", color = Muted, fontSize = 12.sp)
+                                }
+                                Switch(
+                                    checked = stabilizeBeforeCloud,
+                                    onCheckedChange = { stabilizeBeforeCloud = it; settings.stabilizeBeforeCloud = it },
+                                    enabled = !running,
+                                    modifier = Modifier.testTag("stabilize_before_cloud_switch")
+                                )
                             }
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {

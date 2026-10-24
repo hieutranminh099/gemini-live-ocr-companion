@@ -174,4 +174,111 @@ class StandaloneTranslatorTest {
         assertEquals("Mau đi thôi, không kịp nữa rồi!", preloadedHit)
         assertEquals("Câu tùy chỉnh đã lưu", ramCacheHit)
     }
+
+    @Test
+    fun tier1SmartModelRoutingUsesFlashByDefaultAndEscalatesToProOnlyWhenNeeded() {
+        val defaultFast = CostOptimizationEngine.routeModel(
+            texts = listOf("快走，来不及了！"),
+            sourceLang = "zh",
+            profile = "manga",
+            mode = "fast",
+            forceHighPrecision = false
+        )
+        assertEquals(CostOptimizationEngine.FLASH_LITE_MODEL, defaultFast.model)
+        assertEquals(false, defaultFast.isProEscalated)
+
+        val highPrecision = CostOptimizationEngine.routeModel(
+            texts = listOf("快走，来不及了！"),
+            sourceLang = "zh",
+            profile = "manga",
+            mode = "fast",
+            forceHighPrecision = true
+        )
+        assertEquals(CostOptimizationEngine.PRO_MODEL, highPrecision.model)
+        assertTrue(highPrecision.isProEscalated)
+
+        val longPassage = List(220) { "word$it" }.joinToString(" ")
+        val longRoute = CostOptimizationEngine.routeModel(
+            texts = listOf(longPassage),
+            sourceLang = "en",
+            profile = "document",
+            mode = "fast",
+            forceHighPrecision = false
+        )
+        assertEquals(CostOptimizationEngine.PRO_MODEL, longRoute.model)
+        assertTrue(longRoute.isProEscalated)
+    }
+
+    @Test
+    fun tier2FuzzyMatchSubstitutesNumbersAndMatchesOfflineUiDictionary() {
+        assertEquals("Bắt đầu", CostOptimizationEngine.matchOfflineUiTerm("Start"))
+        assertEquals("Cài đặt", CostOptimizationEngine.matchOfflineUiTerm("[Settings]"))
+        assertEquals("Túi đồ", CostOptimizationEngine.matchOfflineUiTerm("Inventory"))
+        assertEquals("Tăng cấp", CostOptimizationEngine.matchOfflineUiTerm("Level Up!"))
+
+        PhoneTranslationCache.put(
+            context = null,
+            cacheKey = "zh|game|fast|获得 100 灵石",
+            translated = "Nhận được 100 linh thạch"
+        )
+        val fuzzyMatched = PhoneTranslationCache.lookup(
+            context = null,
+            cacheKey = "zh|game|fast|获得 250 灵石",
+            sourceText = "获得 250 灵石",
+            rawGlossary = "",
+            preloadedBankEnabled = true,
+            fuzzyEnabled = true
+        )
+        assertEquals("Nhận được 250 linh thạch", fuzzyMatched)
+    }
+
+    @Test
+    fun tier3OcrNoisePreFilterAndNumberedBatchingWorkAsExpected() {
+        assertTrue(CostOptimizationEngine.isOcrNoise("|| // \\\\ __ : ;", "en"))
+        assertTrue(CostOptimizationEngine.isOcrNoise("123456", "zh"))
+        assertTrue(CostOptimizationEngine.isOcrNoise("ab", "en"))
+        assertEquals(false, CostOptimizationEngine.isOcrNoise("HP", "en"))
+        assertEquals(false, CostOptimizationEngine.isOcrNoise("师兄小心", "zh"))
+
+        val batched = CostOptimizationEngine.formatNumberedBatch(listOf("Câu một", "Câu hai"))
+        assertEquals("1. Câu một\n2. Câu hai", batched)
+        val parsed = CostOptimizationEngine.parseNumberedLines("1. Dịch một\n2. Dịch hai", 2)
+        assertEquals(listOf("Dịch một", "Dịch hai"), parsed)
+    }
+
+    @Test
+    fun tier4And5TokenBudgetContextWindowAndSmartHybridEscalation() {
+        val normalBudget = CostOptimizationEngine.computeMaxOutputTokens(
+            texts = listOf("师兄，我们走吧！"),
+            isProEscalated = false
+        )
+        assertTrue(normalBudget in 100..250)
+
+        val history = listOf("1" to "a", "2" to "b", "3" to "c", "4" to "d")
+        val compressed = CostOptimizationEngine.compressContextWindow(history, maxItems = 2)
+        assertEquals(listOf("3" to "c", "4" to "d"), compressed)
+
+        // Short simple dialogue stays offline (shouldEscalateToGemini == false)
+        assertEquals(
+            false,
+            CostOptimizationEngine.shouldEscalateToGemini(
+                texts = listOf("今天天气很好"),
+                sourceLang = "zh",
+                profile = "manga",
+                costSavingMode = true,
+                forceHighPrecision = false
+            )
+        )
+        // Complex Xianxia / cultivation terminology escalates to Gemini
+        assertEquals(
+            true,
+            CostOptimizationEngine.shouldEscalateToGemini(
+                texts = listOf("师尊在秘境突破元婴期，引动乾坤阵法"),
+                sourceLang = "zh",
+                profile = "manga",
+                costSavingMode = true,
+                forceHighPrecision = false
+            )
+        )
+    }
 }

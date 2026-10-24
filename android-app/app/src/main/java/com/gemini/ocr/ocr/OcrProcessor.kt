@@ -2,6 +2,8 @@ package com.gemini.ocr.ocr
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import com.gemini.ocr.SessionState
+import com.gemini.ocr.network.CostOptimizationEngine
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
@@ -19,7 +21,7 @@ data class OcrBlock(val id: String, val text: String, val rect: Rect) {
             .put("width", rect.width().toDouble() / width).put("height", rect.height().toDouble() / height))
 }
 
-class OcrProcessor(language: String) : AutoCloseable {
+class OcrProcessor(private val language: String) : AutoCloseable {
     private val recognizer: TextRecognizer = createRecognizer(language)
 
     suspend fun process(
@@ -68,6 +70,10 @@ class OcrProcessor(language: String) : AutoCloseable {
                 Character.UnicodeScript.HAN, Character.UnicodeScript.HIRAGANA, Character.UnicodeScript.KATAKANA, Character.UnicodeScript.HANGUL)
             val fragment = retainSourceFragments && text.any { it.isDigit() || it == '_' } &&
                 text.all { it.isDigit() || it == '_' || it == '.' || it == '-' || it.isWhitespace() }
+            if (CostOptimizationEngine.isOcrNoise(text, language, retainSourceFragments) && !singleCjk) {
+                SessionState.noiseFiltered.value++
+                return@mapNotNull null
+            }
             if ((text.length < 2 && !singleCjk && !fragment) || (text.none { it.isLetter() } && !fragment) || text.length > 2000 || (!confidence.isNaN() && confidence < .35)) return@mapNotNull null
             val clipped = Rect(rect)
             if (!clipped.intersect(0, 0, bitmap.width, bitmap.height) || clipped.width() < 3 || clipped.height() < 3) return@mapNotNull null

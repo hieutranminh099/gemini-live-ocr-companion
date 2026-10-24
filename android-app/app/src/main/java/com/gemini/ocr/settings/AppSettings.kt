@@ -73,6 +73,16 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("fastOcrDownscale", true)
         set(value) { prefs.edit().putBoolean("fastOcrDownscale", value).apply() }
 
+    /** 5-Tier Gemini Cost Optimization: Fuzzy Match 90-95%, Smart Hybrid gating, compact prompt, 100-250 token cap. */
+    var costSavingMode: Boolean
+        get() = prefs.getBoolean("costSavingMode", true)
+        set(value) { prefs.edit().putBoolean("costSavingMode", value).apply() }
+
+    /** Requires 2-frame OCR stabilization before calling cloud Gemini API (while still allowing instant offline preview). */
+    var stabilizeBeforeCloud: Boolean
+        get() = prefs.getBoolean("stabilizeBeforeCloud", true)
+        set(value) { prefs.edit().putBoolean("stabilizeBeforeCloud", value).apply() }
+
     /** Local personal glossary stored on the phone, formatted as "source = target" per line. */
     var localGlossary: String
         get() = prefs.getString("localGlossary", "")!!
