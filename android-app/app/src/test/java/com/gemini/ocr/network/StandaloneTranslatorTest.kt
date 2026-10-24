@@ -176,7 +176,7 @@ class StandaloneTranslatorTest {
     }
 
     @Test
-    fun tier1SmartModelRoutingUsesFlashByDefaultAndEscalatesToProOnlyWhenNeeded() {
+    fun tier1ExclusiveFlashLiteRoutingRemovesGeminiProCompletely() {
         val defaultFast = CostOptimizationEngine.routeModel(
             texts = listOf("快走，来不及了！"),
             sourceLang = "zh",
@@ -187,26 +187,64 @@ class StandaloneTranslatorTest {
         assertEquals(CostOptimizationEngine.FLASH_LITE_MODEL, defaultFast.model)
         assertEquals(false, defaultFast.isProEscalated)
 
-        val highPrecision = CostOptimizationEngine.routeModel(
-            texts = listOf("快走，来不及了！"),
-            sourceLang = "zh",
-            profile = "manga",
-            mode = "fast",
-            forceHighPrecision = true
-        )
-        assertEquals(CostOptimizationEngine.PRO_MODEL, highPrecision.model)
-        assertTrue(highPrecision.isProEscalated)
-
         val longPassage = List(220) { "word$it" }.joinToString(" ")
         val longRoute = CostOptimizationEngine.routeModel(
             texts = listOf(longPassage),
             sourceLang = "en",
             profile = "document",
-            mode = "fast",
-            forceHighPrecision = false
+            mode = "quality",
+            forceHighPrecision = true
         )
-        assertEquals(CostOptimizationEngine.PRO_MODEL, longRoute.model)
-        assertTrue(longRoute.isProEscalated)
+        assertEquals(CostOptimizationEngine.FLASH_LITE_MODEL, longRoute.model)
+        assertEquals(false, longRoute.isProEscalated)
+    }
+
+    @Test
+    fun selfLearningDatabasePreCorrectsOcrErrorsClassifiesCategoriesAndIncrementsFrequency() {
+        SelfLearningDatabase.resetForTest()
+
+        // 1. OCR Pre-correction fixes known OCR confusion variants before lookup
+        val corrected1 = SelfLearningDatabase.preprocessAndCorrectOcr("帅兄，小心I")
+        assertEquals("师兄，小心！", corrected1)
+
+        val correctedUi = SelfLearningDatabase.preprocessAndCorrectOcr("LeveI Up")
+        assertEquals("Level Up", correctedUi)
+
+        // 2. Lookup hits the bank and increments usage_frequency
+        val beforeFreq = SelfLearningDatabase.lookup(null, "师兄，小心！", incrementFrequency = false)!!.usageFrequency
+        val hitRecord = SelfLearningDatabase.lookup(null, "帅兄，小心I", incrementFrequency = true)!!
+        assertEquals("Sư huynh, cẩn thận!", hitRecord.translatedText)
+        assertEquals(BankCategory.DIALOGUE, hitRecord.category)
+        assertEquals(beforeFreq + 1, hitRecord.usageFrequency)
+
+        // 3. Automatic category classification for UI, PRONOUN, and DIALOGUE
+        assertEquals(BankCategory.UI, SelfLearningDatabase.classifyCategory("Inventory", "Túi đồ"))
+        assertEquals(BankCategory.PRONOUN, SelfLearningDatabase.classifyCategory("大师兄", "Đại sư huynh"))
+        assertEquals(BankCategory.DIALOGUE, SelfLearningDatabase.classifyCategory("今天我们一起去秘境历练", "Hôm nay chúng ta cùng đi bí cảnh lịch luyện"))
+    }
+
+    @Test
+    fun geminiCloudTranslationAutomaticallySavesIntoSelfLearningBank() = runBlocking {
+        SelfLearningDatabase.resetForTest()
+        StandaloneTranslator.overrideGeminiTranslator = { texts, _, _, _, _ ->
+            texts.map { "Bản dịch tự học: $it" }
+        }
+        val newSentence = "宗门大比即将开始，所有弟子速来广场集合"
+        val outcome = StandaloneTranslator.translateWithGemini(
+            apiKey = "test-key",
+            sourceLang = "zh",
+            mode = "fast",
+            profile = "manga",
+            texts = listOf(newSentence),
+            glossaryRaw = ""
+        )
+        assertEquals("Gemini Flash-Lite", outcome.engineLabel)
+
+        // Verify the sentence was automatically learned into SelfLearningDatabase
+        val learned = SelfLearningDatabase.lookup(null, newSentence, incrementFrequency = false)
+        assertTrue(learned != null)
+        assertEquals("Bản dịch tự học: $newSentence", learned!!.translatedText)
+        assertEquals(BankCategory.DIALOGUE, learned.category)
     }
 
     @Test
@@ -247,7 +285,7 @@ class StandaloneTranslatorTest {
     }
 
     @Test
-    fun tier4And5TokenBudgetContextWindowAndSmartHybridEscalation() {
+    fun tier4And5TokenBudgetContextWindowAndFlexibleHybridThreshold() {
         val normalBudget = CostOptimizationEngine.computeMaxOutputTokens(
             texts = listOf("师兄，我们走吧！"),
             isProEscalated = false
@@ -258,18 +296,19 @@ class StandaloneTranslatorTest {
         val compressed = CostOptimizationEngine.compressContextWindow(history, maxItems = 2)
         assertEquals(listOf("3" to "c", "4" to "d"), compressed)
 
-        // Short simple dialogue stays offline (shouldEscalateToGemini == false)
+        // Known bank phrase <= 15 chars stays in local bank (< 1ms, 0 tokens)
         assertEquals(
             false,
             CostOptimizationEngine.shouldEscalateToGemini(
-                texts = listOf("今天天气很好"),
+                texts = listOf("师兄，小心！"),
                 sourceLang = "zh",
                 profile = "manga",
                 costSavingMode = true,
-                forceHighPrecision = false
+                charThreshold = 15,
+                learnMissingShortPhrases = true
             )
         )
-        // Complex Xianxia / cultivation terminology escalates to Gemini
+        // Sentence exceeding flexible charThreshold (> 15 chars) escalates to Gemini Flash-Lite
         assertEquals(
             true,
             CostOptimizationEngine.shouldEscalateToGemini(
@@ -277,7 +316,8 @@ class StandaloneTranslatorTest {
                 sourceLang = "zh",
                 profile = "manga",
                 costSavingMode = true,
-                forceHighPrecision = false
+                charThreshold = 15,
+                learnMissingShortPhrases = false
             )
         )
     }

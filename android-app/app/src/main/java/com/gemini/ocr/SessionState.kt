@@ -10,6 +10,8 @@ data class TranslationBackendState(
     val experimentalCliEnabled: Boolean = false,
 ) {
     val badge: String get() = when {
+        mode == "bank_only" -> "Chế độ 1: Dịch thuần từ Kho (Kho thoại SQLite + ML Kit Offline)"
+        mode == "hybrid_gemini" -> "Chế độ 2: Kho kết hợp Gemini Flash-Lite (Hybrid thông minh)"
         mode == "standalone_hybrid" -> "Độc lập trên điện thoại • ML Kit (<150ms) + Gemini Flash-Lite"
         mode == "standalone_mlkit" -> "Độc lập ngoại tuyến • ML Kit On-Device (<150ms)"
         mode == "standalone_gemini" -> "Độc lập trên điện thoại • Gemini Flash-Lite trực tiếp"
@@ -33,11 +35,11 @@ data class TranslationBackendState(
 object SessionState {
     val running = MutableStateFlow(false)
     val paused = MutableStateFlow(false)
-    val status = MutableStateFlow("Sẵn sàng kết nối")
+    val status = MutableStateFlow("Sẵn sàng dịch độc lập trên điện thoại")
     val connected = MutableStateFlow(false)
-    val standaloneActive = MutableStateFlow(false)
+    val standaloneActive = MutableStateFlow(true)
     val offlineModelStatus = MutableStateFlow("Gói ngoại tuyến tự động tải khi cần")
-    val provider = MutableStateFlow("")
+    val provider = MutableStateFlow("standalone")
     val backend = MutableStateFlow(TranslationBackendState())
     val latency = MutableStateFlow(0L)
     val instantMs = MutableStateFlow(0L)
@@ -47,6 +49,8 @@ object SessionState {
     val fuzzyHits = MutableStateFlow(0)
     val savedApiCalls = MutableStateFlow(0)
     val noiseFiltered = MutableStateFlow(0)
+    val ocrCorrectedCount = MutableStateFlow(0)
+    val bankSize = MutableStateFlow(0)
     val activeModelName = MutableStateFlow("gemini-3.1-flash-lite-preview")
     val ocrMs = MutableStateFlow(0L)
     val ocrFrames = MutableStateFlow(0)

@@ -158,51 +158,20 @@ object CostOptimizationEngine {
     )
 
     /**
-     * Tier 1: Smart Model Routing.
-     * Uses Flash-Lite / Flash by default; only escalates to Gemini Pro when:
-     * - User explicitly triggers High Precision re-translation (`forceHighPrecision = true`), OR
-     * - Text exceeds 200 words (or >300 CJK chars), OR
-     * - Text is a complex technical/classical passage (`>= 80` chars with technical profile or classical markers).
+     * Ultra-lightweight Cloud Model Routing:
+     * Gemini Pro is completely removed to prevent lag, latency spikes, and high token costs.
+     * Always routes to the fastest, most cost-efficient Flash-Lite engine (`gemini-3.1-flash-lite-preview`).
      */
     fun routeModel(
-        texts: List<String>,
-        sourceLang: String,
-        profile: String,
-        mode: String,
-        forceHighPrecision: Boolean = false
+        @Suppress("UNUSED_PARAMETER") texts: List<String>,
+        @Suppress("UNUSED_PARAMETER") sourceLang: String,
+        @Suppress("UNUSED_PARAMETER") profile: String,
+        @Suppress("UNUSED_PARAMETER") mode: String,
+        @Suppress("UNUSED_PARAMETER") forceHighPrecision: Boolean = false
     ): ModelRouteDecision {
-        if (forceHighPrecision) {
-            return ModelRouteDecision(
-                model = PRO_MODEL,
-                reason = "high_precision_user_request",
-                isProEscalated = true
-            )
-        }
-        val combined = texts.joinToString(" ").trim()
-        val wordCount = estimateWordCount(combined, sourceLang)
-        if (wordCount > 200) {
-            return ModelRouteDecision(
-                model = PRO_MODEL,
-                reason = "long_passage_${wordCount}_words",
-                isProEscalated = true
-            )
-        }
-        val isComplexClassicalOrTechnical = combined.length >= 80 && (
-            profile == "technical" ||
-            mode == "quality" ||
-            containsClassicalOrComplexStructure(combined)
-        )
-        if (isComplexClassicalOrTechnical) {
-            return ModelRouteDecision(
-                model = PRO_MODEL,
-                reason = "complex_technical_or_classical",
-                isProEscalated = true
-            )
-        }
-        val defaultFlash = if (mode == "fast") FLASH_LITE_MODEL else FLASH_MODEL
         return ModelRouteDecision(
-            model = defaultFlash,
-            reason = "default_flash_live_ocr",
+            model = FLASH_LITE_MODEL,
+            reason = "flash_lite_exclusive_engine",
             isProEscalated = false
         )
     }
@@ -498,35 +467,53 @@ object CostOptimizationEngine {
     ): List<Pair<String, String>> = history.takeLast(maxItems.coerceIn(1, 2))
 
     /**
-     * Tier 5: Smart Hybrid Offline + Cloud Escalation.
-     * Determines whether an OCR batch that has already been translated on-device by ML Kit
-     * needs to be forwarded to the Gemini API.
-     *
-     * Escalates to Gemini API when:
-     * - User explicitly requested High Precision (`forceHighPrecision = true`), OR
-     * - Cost-saving smart filter is disabled (`costSavingMode = false`), OR
-     * - Any line is long / multi-clause (> 18 CJK chars or > 12 words or >= 3 clauses), OR
-     * - Any line contains complex Sino-Vietnamese / Xianxia / Wuxia / Sci-Fi / Classical terms.
+     * Mode 2 (Kho kết hợp Gemini) Smart Hybrid Escalation:
+     * - Phrases that match the local SQLite Self-Learning Bank, Preloaded Chinese Dialogue Bank,
+     *   or Offline UI Dictionary are served in < 1ms with 0 cloud tokens (`false`).
+     * - Phrases that exceed [charThreshold] (default 15 chars), contain complex domain markers,
+     *   or are missing from the local bank (when [learnMissingShortPhrases] is enabled) escalate to
+     *   Gemini Flash-Lite once so they can be automatically learned into SQLite.
      */
     fun shouldEscalateToGemini(
         texts: List<String>,
         sourceLang: String,
         profile: String,
         costSavingMode: Boolean = true,
-        forceHighPrecision: Boolean = false
+        forceHighPrecision: Boolean = false,
+        charThreshold: Int = 15,
+        learnMissingShortPhrases: Boolean = false
     ): Boolean {
         if (forceHighPrecision) return true
         if (!costSavingMode) return true
         if (profile == "technical") return true
 
+        val effectiveThreshold = charThreshold.coerceIn(5, 60)
+
         for (raw in texts) {
-            val text = raw.trim()
-            if (text.isEmpty()) continue
-            // If already in our preloaded Chinese dialogue bank or offline UI dictionary, no need for Gemini
-            if (ChineseDialogueBank.matchInstant(text) != null || matchOfflineUiTerm(text) != null) {
+            val corrected = SelfLearningDatabase.preprocessAndCorrectOcr(raw)
+            if (corrected.isEmpty()) continue
+
+            // Check if already in SQLite Self-Learning Bank, ChineseDialogueBank, or Offline UI Dictionary
+            val inBank = SelfLearningDatabase.lookup(null, corrected, incrementFrequency = false) != null ||
+                ChineseDialogueBank.matchInstant(corrected) != null ||
+                matchOfflineUiTerm(corrected) != null
+
+            // If phrase exceeds the flexible character threshold, escalate to Gemini Flash-Lite
+            if (corrected.length > effectiveThreshold) {
+                return true
+            }
+
+            // If phrase is <= threshold and already in the bank, serve directly from bank (< 1ms, 0 tokens)
+            if (inBank) {
                 continue
             }
-            val simplified = ChineseDialogueBank.normalizeTraditional(text)
+
+            // If missing from bank and user chose to call Gemini once to auto-learn into SQLite
+            if (learnMissingShortPhrases) {
+                return true
+            }
+
+            val simplified = ChineseDialogueBank.normalizeTraditional(corrected)
             if (complexDomainMarkers.any { simplified.contains(it, ignoreCase = true) }) {
                 return true
             }
@@ -541,7 +528,7 @@ object CostOptimizationEngine {
                     Character.UnicodeScript.HANGUL
                 )
             }
-            if (cjkChars > 18) return true
+            if (cjkChars > effectiveThreshold) return true
             val wordCount = estimateWordCount(simplified, sourceLang)
             if (wordCount > 12) return true
         }

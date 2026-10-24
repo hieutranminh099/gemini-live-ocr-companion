@@ -22,6 +22,7 @@ import com.gemini.ocr.SessionState
 import com.gemini.ocr.TranslationBackendState
 import com.gemini.ocr.network.CostOptimizationEngine
 import com.gemini.ocr.network.PhoneTranslationCache
+import com.gemini.ocr.network.SelfLearningDatabase
 import com.gemini.ocr.network.StandaloneTranslator
 import com.gemini.ocr.network.TranslationClient
 import com.gemini.ocr.ocr.OcrBlock
@@ -101,9 +102,7 @@ class ScreenCaptureService : Service() {
     private var latestSnapshotFingerprint: OcrFrameFingerprint? = null
     private val oneFrame: Boolean get() = settings.subtitleFocus && settings.subtitleCapture == "frame"
     private fun isStandaloneActive(): Boolean =
-        settings.connectionMode == "standalone" ||
-            standaloneSession ||
-            (SessionState.running.value && settings.connectionMode == "auto" && !SessionState.connected.value)
+        standaloneSession || (SessionState.running.value && !SessionState.connected.value)
     private fun textKey(text: String) = if (settings.subtitleFocus) SubtitleText.identity(text) else text
     private fun memoryKey(text: String) = "${settings.language}|${settings.profile}|${settings.mode}|${textKey(text)}"
     private fun retryKey(signature: String) = "${settings.language}|${settings.profile}|${settings.mode}|$signature"
@@ -112,6 +111,7 @@ class ScreenCaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
         settings = AppSettings(this)
+        SelfLearningDatabase.ensureInitialized(this)
         imageThread.start()
         imageHandler = Handler(imageThread.looper)
         getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -121,12 +121,10 @@ class ScreenCaptureService : Service() {
         when (intent?.action) {
             "STOP" -> { stopSelf(); return START_NOT_STICKY }
             "TOGGLE" -> { toggle(); return START_NOT_STICKY }
-            "RETRANSLATE_PRO" -> { retranslateHighPrecision(); return START_NOT_STICKY }
         }
         if (SessionState.running.value || intent == null) { if (intent == null) stopSelf(); return START_NOT_STICKY }
         val data = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra("data", Intent::class.java) else @Suppress("DEPRECATION") intent.getParcelableExtra("data")
-        val canRunStandalone = settings.connectionMode != "pc"
-        if (data == null || (settings.token.isBlank() && !canRunStandalone)) { stopSelf(); return START_NOT_STICKY }
+        if (data == null) { stopSelf(); return START_NOT_STICKY }
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(1, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             else startForeground(1, notification())
@@ -134,44 +132,27 @@ class ScreenCaptureService : Service() {
             SessionState.paused.value = false
             SessionState.blocks.value = 0; SessionState.cacheHits.value = 0; SessionState.preloadedHits.value = 0
             SessionState.fuzzyHits.value = 0; SessionState.savedApiCalls.value = 0; SessionState.noiseFiltered.value = 0
+            SessionState.ocrCorrectedCount.value = 0; SessionState.bankSize.value = SelfLearningDatabase.size(this)
             SessionState.latency.value = 0; SessionState.instantMs.value = 0; SessionState.ocrMs.value = 0; SessionState.ocrFrames.value = 0
             SessionState.lastOcr.value = ""; SessionState.lastTranslation.value = ""
-            standaloneSession = settings.connectionMode == "standalone" || (settings.connectionMode == "auto" && settings.token.isBlank())
+            standaloneSession = true
+            SessionState.standaloneActive.value = true
+            memoryAllowed = true
+            latestPendingSupported = true
             ocr = OcrProcessor(settings.language)
-            overlay = TranslationOverlay(this, settings, { toggle() }, { stopSelf() }, { requestFrame() }, { selectRegion() }, { cancelPending() }, { retranslateHighPrecision() })
-            if (settings.connectionMode != "standalone" && settings.token.isNotBlank()) {
-                network = TranslationClient(settings, scope, { onMessage(it) }, {
-                    SessionState.standaloneActive.value = false
-                    resetFrame(clearMemory = true)
-                    overlay?.feedback(if (oneFrame) "Đã kết nối Windows • Chạm 1 KHUNG để dịch" else "Đã kết nối Windows • Tự động theo dõi phụ đề")
-                }).also { it.connect() }
-            }
-            if (standaloneSession || settings.connectionMode == "auto") {
-                SessionState.standaloneActive.value = standaloneSession || !SessionState.connected.value
-                memoryAllowed = true
-                latestPendingSupported = true
-                val modeName = when (settings.standaloneEngine) {
-                    "mlkit" -> "standalone_mlkit"
-                    "gemini" -> "standalone_gemini"
-                    else -> "standalone_hybrid"
-                }
-                if (!SessionState.connected.value) {
-                    SessionState.provider.value = "standalone"
-                    SessionState.backend.value = TranslationBackendState(
-                        provider = "standalone",
-                        mode = modeName,
-                        translationAvailable = true
-                    )
-                    SessionState.status.value = if (oneFrame) "Đang chạy độc lập • Chạm 1 KHUNG để dịch" else "Đang chạy độc lập (≤ 1s) • Tự động dịch trên điện thoại"
-                    overlay?.feedback(SessionState.status.value)
-                }
-                scope.launch {
-                    StandaloneTranslator.preWarm(this@ScreenCaptureService, settings.language)
-                    if (settings.standaloneEngine != "gemini") {
-                        StandaloneTranslator.prepareOfflineModel(this@ScreenCaptureService, settings.language) { msg ->
-                            SessionState.offlineModelStatus.value = msg
-                        }
-                    }
+            overlay = TranslationOverlay(this, settings, { toggle() }, { stopSelf() }, { requestFrame() }, { selectRegion() }, { cancelPending() })
+            SessionState.provider.value = "standalone"
+            SessionState.backend.value = TranslationBackendState(
+                provider = "standalone",
+                mode = settings.translationMode,
+                translationAvailable = true
+            )
+            SessionState.status.value = if (oneFrame) "Đang chạy độc lập • Chạm 1 KHUNG để dịch" else "Đang chạy độc lập (≤ 1s) • Tự động dịch trên điện thoại"
+            overlay?.feedback(SessionState.status.value)
+            scope.launch {
+                StandaloneTranslator.preWarm(this@ScreenCaptureService, settings.language)
+                StandaloneTranslator.prepareOfflineModel(this@ScreenCaptureService, settings.language) { msg ->
+                    SessionState.offlineModelStatus.value = msg
                 }
             }
             projection = getSystemService(MediaProjectionManager::class.java).getMediaProjection(Activity.RESULT_OK, data)
@@ -472,9 +453,14 @@ class ScreenCaptureService : Service() {
                             ocr!!.process(
                                 bitmap = cropped,
                                 retainSourceFragments = settings.subtitleFocus && settings.language in setOf("zh", "ja", "ko"),
-                                fastDownscale = settings.fastOcrDownscale && settings.turboLatency
+                                fastDownscale = settings.fastOcrDownscale,
+                                ocrPreCorrection = settings.ocrPreCorrection
                             )
-                        } finally { if (cropped !== frame.bitmap) cropped.recycle() }
+                        } finally {
+                            if (cropped !== frame.bitmap && !cropped.isRecycled) {
+                                cropped.recycle()
+                            }
+                        }
                     }
                     currentCoroutineContext().ensureActive()
                     SessionState.ocrMs.value = SystemClock.elapsedRealtime() - started
@@ -673,82 +659,88 @@ class ScreenCaptureService : Service() {
         token: SubtitlePipeline.RequestToken,
         signature: String,
         missing: List<OcrBlock>,
-        forceHighPrecision: Boolean = false
+        @Suppress("UNUSED_PARAMETER") forceHighPrecision: Boolean = false
     ) {
-        val engine = settings.standaloneEngine
+        val isBankOnlyMode = settings.translationMode == "bank_only"
         val apiKey = settings.effectiveStandaloneApiKey()
         var stage1Rendered = false
         var stage1Latency = 0L
 
-        if (engine != "gemini" && !forceHighPrecision) {
-            try {
-                val instant = StandaloneTranslator.translateOnDevice(
-                    context = this@ScreenCaptureService,
-                    sourceLang = settings.language,
+        // Step 1: On-Device ML Kit Offline translation (< 150ms, 0 tokens)
+        try {
+            val instant = StandaloneTranslator.translateOnDevice(
+                context = this@ScreenCaptureService,
+                sourceLang = settings.language,
+                texts = missing.map { it.text },
+                glossaryRaw = settings.localGlossary
+            )
+            if (pendingId != token.requestId || !pipeline.accepts(token) || blocked()) return
+            stage1Latency = instant.latencyMs
+            SessionState.instantMs.value = stage1Latency
+            SessionState.latency.value = stage1Latency
+
+            // In Mode 1 (Dịch thuần từ Kho): NEVER call external cloud API.
+            // In Mode 2 (Kho kết hợp Gemini): Escalate to Gemini Flash-Lite if phrase exceeds hybridCharThreshold
+            // or is not yet in the SelfLearningDatabase SQLite bank (so Gemini can translate once & auto-save into SQLite).
+            val shouldEscalate = !isBankOnlyMode &&
+                apiKey.isNotBlank() &&
+                CostOptimizationEngine.shouldEscalateToGemini(
                     texts = missing.map { it.text },
-                    glossaryRaw = settings.localGlossary
+                    sourceLang = settings.language,
+                    profile = settings.profile,
+                    costSavingMode = settings.costSavingMode,
+                    charThreshold = settings.hybridCharThreshold,
+                    learnMissingShortPhrases = true
                 )
-                if (pendingId != token.requestId || !pipeline.accepts(token) || blocked()) return
-                stage1Latency = instant.latencyMs
-                SessionState.instantMs.value = stage1Latency
-                SessionState.latency.value = stage1Latency
-                val shouldEscalate = engine == "hybrid" &&
-                    apiKey.isNotBlank() &&
-                    CostOptimizationEngine.shouldEscalateToGemini(
-                        texts = missing.map { it.text },
-                        sourceLang = settings.language,
-                        profile = settings.profile,
-                        costSavingMode = settings.costSavingMode,
-                        forceHighPrecision = false
-                    )
-                missing.forEachIndexed { index, block ->
-                    val translated = instant.translations.getOrNull(index) ?: block.text
-                    currentTranslations[textKey(block.text)] = translated
-                    if (!shouldEscalate) {
-                        memory.put(memoryKey(block.text), translated)
-                        PhoneTranslationCache.put(this@ScreenCaptureService, memoryKey(block.text), translated)
-                    }
-                }
-                replyAt = 0L
-                displayRequestId = token.requestId
-                lastDrawGeneration = -1L
-                renderCurrent()
-                stage1Rendered = true
+
+            missing.forEachIndexed { index, block ->
+                val translated = instant.translations.getOrNull(index) ?: block.text
+                currentTranslations[textKey(block.text)] = translated
                 if (!shouldEscalate) {
-                    retries.succeeded(retryKey(signature))
-                    pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""
-                    overlay?.busy(false)
-                    SessionState.blocks.value += missing.size
-                    SessionState.savedApiCalls.value += 1
-                    val totalMs = (SystemClock.elapsedRealtime() - observedAt).coerceAtLeast(1L)
-                    SessionState.timings.value = "OCR ${SessionState.ocrMs.value} ms • Cục bộ ML Kit $stage1Latency ms (0 token) • Tổng $totalMs ms"
-                    SessionState.status.value = if (oneFrame) "Đã dịch cục bộ (0 token) • $stage1Latency ms" else "Đang dịch cục bộ (0 token) • $stage1Latency ms"
-                    overlay?.feedback("Dịch tức thì (0 token): $stage1Latency ms • Chạm PRO nếu cần dịch sâu\nOCR: ${SessionState.lastOcr.value.take(72)}")
-                    return
-                } else {
-                    val totalMs = (SystemClock.elapsedRealtime() - observedAt).coerceAtLeast(1L)
-                    SessionState.status.value = "Đã hiện bản dịch tức thì ($stage1Latency ms) • Câu phức tạp → đang gọi Gemini…"
-                    overlay?.feedback("Tức thì: $stage1Latency ms (Tổng $totalMs ms) • Đang tinh chỉnh AI\nOCR: ${SessionState.lastOcr.value.take(72)}")
+                    memory.put(memoryKey(block.text), translated)
+                    PhoneTranslationCache.put(this@ScreenCaptureService, memoryKey(block.text), translated, block.text)
                 }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                if (engine == "mlkit" || apiKey.isBlank()) {
-                    pipeline.retry(token)
-                    pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""; sentSignature = ""
-                    overlay?.busy(false)
-                    SessionState.status.value = error.message ?: "Chưa tải xong gói dịch ngoại tuyến trên điện thoại."
-                    overlay?.feedback(SessionState.status.value, true)
-                    return
-                }
+            }
+            replyAt = 0L
+            displayRequestId = token.requestId
+            lastDrawGeneration = -1L
+            renderCurrent()
+            stage1Rendered = true
+
+            if (!shouldEscalate) {
+                retries.succeeded(retryKey(signature))
+                pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""
+                overlay?.busy(false)
+                SessionState.blocks.value += missing.size
+                SessionState.savedApiCalls.value += 1
+                val totalMs = (SystemClock.elapsedRealtime() - observedAt).coerceAtLeast(1L)
+                SessionState.timings.value = "OCR ${SessionState.ocrMs.value} ms • Kho/ML Kit Offline $stage1Latency ms (0 token) • Tổng $totalMs ms"
+                SessionState.status.value = "Chế độ 1: Đã dịch từ Kho/Offline (0 token) • $stage1Latency ms"
+                overlay?.feedback("Kho/Offline (0 token): $stage1Latency ms\nOCR: ${SessionState.lastOcr.value.take(72)}")
+                return
+            } else {
+                val totalMs = (SystemClock.elapsedRealtime() - observedAt).coerceAtLeast(1L)
+                SessionState.status.value = "Tức thì ($stage1Latency ms) • Đang gọi Gemini Flash-Lite & tự học vào Kho…"
+                overlay?.feedback("Tức thì: $stage1Latency ms (Tổng $totalMs ms) • Đang dịch Gemini Flash-Lite\nOCR: ${SessionState.lastOcr.value.take(72)}")
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            if (isBankOnlyMode || apiKey.isBlank()) {
+                pipeline.retry(token)
+                pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""; sentSignature = ""
+                overlay?.busy(false)
+                SessionState.status.value = error.message ?: "Chưa tải xong gói dịch ngoại tuyến trên điện thoại."
+                overlay?.feedback(SessionState.status.value, true)
+                return
             }
         }
 
-        if (apiKey.isBlank()) {
+        if (isBankOnlyMode || apiKey.isBlank()) {
             pipeline.retry(token)
             pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""; sentSignature = ""
             overlay?.busy(false)
-            SessionState.status.value = "Chưa có Gemini API Key trên điện thoại. Chuyển sang Hybrid/ML Kit hoặc nhập API Key."
+            SessionState.status.value = "Chưa có Gemini API Key. Đang dùng Kho thoại Offline hoặc hãy nhập API Key ở tab Tùy chỉnh."
             overlay?.feedback(SessionState.status.value, true)
             return
         }
@@ -756,29 +748,30 @@ class ScreenCaptureService : Service() {
         if (!stage1Rendered) {
             overlay?.busy(true)
             overlay?.progress(0, missing.joinToString(" ") { it.text })
-            SessionState.status.value = if (forceHighPrecision) {
-                "Đang dịch lại với chế độ chính xác cao (Gemini Pro)…"
-            } else {
-                "Đang dịch trực tiếp bằng Gemini trên điện thoại…"
-            }
+            SessionState.status.value = "Đang dịch bằng Gemini Flash-Lite & tự lưu vào Kho SQLite…"
         }
 
         try {
             val gemini = StandaloneTranslator.translateWithGemini(
                 apiKey = apiKey,
                 sourceLang = settings.language,
-                mode = if (forceHighPrecision) "quality" else settings.mode,
+                mode = "fast",
                 profile = settings.profile,
                 texts = missing.map { it.text },
                 glossaryRaw = settings.localGlossary,
-                forceHighPrecision = forceHighPrecision
+                forceHighPrecision = false
             )
-            if (pendingId != token.requestId || (!forceHighPrecision && !pipeline.accepts(token)) || blocked()) return
+            if (pendingId != token.requestId || !pipeline.accepts(token) || blocked()) return
             missing.forEachIndexed { index, block ->
                 val translated = gemini.translations.getOrNull(index) ?: block.text
                 currentTranslations[textKey(block.text)] = translated
                 memory.put(memoryKey(block.text), translated)
-                PhoneTranslationCache.put(this@ScreenCaptureService, memoryKey(block.text), translated)
+                PhoneTranslationCache.put(this@ScreenCaptureService, memoryKey(block.text), translated, block.text)
+                SelfLearningDatabase.learnOrUpsert(
+                    context = this@ScreenCaptureService,
+                    sourceText = block.text,
+                    translatedText = translated
+                )
             }
             retries.succeeded(retryKey(signature))
             replyAt = 0L
@@ -791,12 +784,12 @@ class ScreenCaptureService : Service() {
             SessionState.blocks.value += missing.size
             val totalMs = (SystemClock.elapsedRealtime() - observedAt).coerceAtLeast(1L)
             SessionState.timings.value = if (stage1Latency > 0) {
-                "OCR ${SessionState.ocrMs.value} ms • Tức thì $stage1Latency ms • ${gemini.provider} ${gemini.latencyMs} ms"
+                "OCR ${SessionState.ocrMs.value} ms • Tức thì $stage1Latency ms • Gemini Flash-Lite ${gemini.latencyMs} ms (Đã lưu vào Kho)"
             } else {
-                "OCR ${SessionState.ocrMs.value} ms • ${gemini.provider} ${gemini.latencyMs} ms • Tổng $totalMs ms"
+                "OCR ${SessionState.ocrMs.value} ms • Gemini Flash-Lite ${gemini.latencyMs} ms • Tổng $totalMs ms (Đã lưu vào Kho)"
             }
-            SessionState.status.value = "Đang dịch độc lập (${gemini.provider}) • ${gemini.latencyMs} ms"
-            overlay?.feedback("${gemini.provider}: ${gemini.latencyMs} ms\nOCR: ${SessionState.lastOcr.value.take(72)}")
+            SessionState.status.value = "Đã dịch (${gemini.provider} · ${gemini.latencyMs} ms) & tự động lưu vào Kho thoại"
+            overlay?.feedback("${gemini.provider}: ${gemini.latencyMs} ms • Đã lưu vào Kho\nOCR: ${SessionState.lastOcr.value.take(72)}")
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
@@ -804,19 +797,19 @@ class ScreenCaptureService : Service() {
                 missing.forEach { block ->
                     currentTranslations[textKey(block.text)]?.let { translated ->
                         memory.put(memoryKey(block.text), translated)
-                        PhoneTranslationCache.put(this@ScreenCaptureService, memoryKey(block.text), translated)
+                        PhoneTranslationCache.put(this@ScreenCaptureService, memoryKey(block.text), translated, block.text)
                     }
                 }
                 pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""
                 overlay?.busy(false)
                 SessionState.blocks.value += missing.size
-                SessionState.status.value = "Đang dùng bản dịch tức thì ($stage1Latency ms) • Gemini tạm gián đoạn"
-                overlay?.feedback("Đã giữ bản dịch cục bộ ($stage1Latency ms)\nOCR: ${SessionState.lastOcr.value.take(72)}")
+                SessionState.status.value = "Đang dùng bản dịch Kho/Offline ($stage1Latency ms) • Gemini tạm gián đoạn"
+                overlay?.feedback("Đã giữ bản dịch Kho/Offline ($stage1Latency ms)\nOCR: ${SessionState.lastOcr.value.take(72)}")
             } else {
                 pipeline.retry(token)
                 pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""; sentSignature = ""
                 overlay?.busy(false)
-                SessionState.status.value = error.message ?: "Không thể gọi Gemini trực tiếp trên điện thoại."
+                SessionState.status.value = error.message ?: "Không thể gọi Gemini Flash-Lite trên điện thoại."
                 overlay?.feedback(SessionState.status.value, true)
             }
         }

@@ -19,7 +19,7 @@ import org.json.JSONArray
 class TranslationOverlay(private val context: Context, private val settings: AppSettings,
     private val onToggle: () -> Unit, private val onStop: () -> Unit,
     private val onCapture: () -> Unit = {}, private val onRegion: () -> Unit = {},
-    private val onCancel: () -> Unit = {}, private val onHighPrecision: () -> Unit = {}) {
+    private val onCancel: () -> Unit = {}) {
     private val wm = context.getSystemService(WindowManager::class.java)
     private val density = context.resources.displayMetrics.density
     private val renderer = RenderView(context).apply { visibility = View.INVISIBLE }
@@ -49,9 +49,6 @@ class TranslationOverlay(private val context: Context, private val settings: App
         "Quét lại vùng phụ đề và tiếp tục dịch tự động" else "Dịch 1 khung phụ đề"
     private val frameButton = action(idleAction, idleDescription) { if (working) onCancel() else onCapture() }
     private val regionButton = action("VÙNG", "Chọn vùng phụ đề", onRegion)
-    private val proButton = action("PRO", "Dịch lại với chế độ chính xác cao (Gemini Pro)", onHighPrecision).apply {
-        setTextColor(Color.rgb(240, 185, 118))
-    }
     private val statusLabel = TextView(context).apply {
         textSize = 11f; setTextColor(Color.rgb(190, 242, 227)); maxLines = 3
         ellipsize = android.text.TextUtils.TruncateAt.END
@@ -64,7 +61,6 @@ class TranslationOverlay(private val context: Context, private val settings: App
         if (settings.subtitleFocus) {
             addView(frameButton, LinearLayout.LayoutParams((72 * density).toInt(), (48 * density).toInt()).apply { marginStart = (6 * density).toInt() })
             addView(regionButton, LinearLayout.LayoutParams((58 * density).toInt(), (48 * density).toInt()).apply { marginStart = (6 * density).toInt() })
-            addView(proButton, LinearLayout.LayoutParams((50 * density).toInt(), (48 * density).toInt()).apply { marginStart = (6 * density).toInt() })
         }
     }
     private val controls = LinearLayout(context).apply {
@@ -81,7 +77,7 @@ class TranslationOverlay(private val context: Context, private val settings: App
                 // Android 12+ passes touches through untrusted overlays only below the obscuring threshold.
                 alpha = if (Build.VERSION.SDK_INT >= 31) context.getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch * .95f else .75f
             }
-    private val bubbleParams = WindowManager.LayoutParams(((if (settings.subtitleFocus) 312 else 48) * density).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
+    private val bubbleParams = WindowManager.LayoutParams(((if (settings.subtitleFocus) 256 else 48) * density).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT).apply {
         gravity = Gravity.TOP or Gravity.START

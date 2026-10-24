@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import com.gemini.ocr.SessionState
 import com.gemini.ocr.network.CostOptimizationEngine
+import com.gemini.ocr.network.SelfLearningDatabase
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
@@ -27,7 +28,8 @@ class OcrProcessor(private val language: String) : AutoCloseable {
     suspend fun process(
         bitmap: Bitmap,
         retainSourceFragments: Boolean = false,
-        fastDownscale: Boolean = false
+        fastDownscale: Boolean = true,
+        ocrPreCorrection: Boolean = true
     ): List<OcrBlock> {
         val maxDim = maxOf(bitmap.width, bitmap.height)
         val scale = if (fastDownscale && maxDim > MAX_OCR_DIMENSION) {
@@ -45,7 +47,7 @@ class OcrProcessor(private val language: String) : AutoCloseable {
         val result = try {
             recognizer.process(InputImage.fromBitmap(targetBitmap, 0)).await()
         } finally {
-            if (targetBitmap !== bitmap) {
+            if (targetBitmap !== bitmap && !targetBitmap.isRecycled) {
                 targetBitmap.recycle()
             }
         }
@@ -63,7 +65,12 @@ class OcrProcessor(private val language: String) : AutoCloseable {
             } else {
                 rawRect
             }
-            val text = Normalizer.normalize(block.text, Normalizer.Form.NFKC).replace(Regex("\\s+"), " ").trim()
+            val rawNormalized = Normalizer.normalize(block.text, Normalizer.Form.NFKC).replace(Regex("\\s+"), " ").trim()
+            val text = if (ocrPreCorrection) {
+                SelfLearningDatabase.preprocessAndCorrectOcr(rawNormalized)
+            } else {
+                rawNormalized
+            }
             // ML Kit sometimes does not supply confidence, so reject only known low-confidence lines.
             val confidence = block.confidence?.toDouble() ?: Double.NaN
             val singleCjk = text.length == 1 && Character.UnicodeScript.of(text[0].code) in setOf(

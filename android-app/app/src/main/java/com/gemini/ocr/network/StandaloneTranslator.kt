@@ -99,22 +99,48 @@ object PhoneTranslationCache {
         preloadedBankEnabled: Boolean = true,
         fuzzyEnabled: Boolean = true
     ): String? {
-        val normalizedSource = normalizeText(sourceText)
-        if (normalizedSource.isEmpty()) return null
+        val rawNormalized = normalizeText(sourceText)
+        if (rawNormalized.isEmpty()) return null
+        val correctedSource = SelfLearningDatabase.preprocessAndCorrectOcr(rawNormalized, context)
+        val normalizedSource = normalizeText(correctedSource)
+
         val glossary = parseGlossary(rawGlossary)
         glossary[normalizedSource]?.let {
             SessionState.savedApiCalls.value++
             return it
         }
+        glossary[rawNormalized]?.let {
+            SessionState.savedApiCalls.value++
+            return it
+        }
+        // Check Self-Learning SQLite Bank (< 1ms via RAM mirror + increments usage_frequency)
+        SelfLearningDatabase.lookup(context, normalizedSource, incrementFrequency = true)?.let { record ->
+            SessionState.preloadedHits.value++
+            SessionState.savedApiCalls.value++
+            return record.translatedText
+        }
         CostOptimizationEngine.matchOfflineUiTerm(normalizedSource)?.let { uiMatched ->
             SessionState.preloadedHits.value++
             SessionState.savedApiCalls.value++
+            SelfLearningDatabase.learnOrUpsert(
+                context = context,
+                sourceText = normalizedSource,
+                translatedText = uiMatched,
+                category = BankCategory.UI,
+                rawOcrBeforeCorrection = rawNormalized
+            )
             return uiMatched
         }
         if (preloadedBankEnabled) {
             ChineseDialogueBank.matchInstant(normalizedSource)?.let { matched ->
                 SessionState.preloadedHits.value++
                 SessionState.savedApiCalls.value++
+                SelfLearningDatabase.learnOrUpsert(
+                    context = context,
+                    sourceText = normalizedSource,
+                    translatedText = matched,
+                    rawOcrBeforeCorrection = rawNormalized
+                )
                 return matched
             }
         }
@@ -123,13 +149,15 @@ object PhoneTranslationCache {
             SessionState.savedApiCalls.value++
             return exact
         }
-        if (fuzzyEnabled && ramCache.isNotEmpty()) {
+        if (fuzzyEnabled && (ramCache.isNotEmpty() || SelfLearningDatabase.size(context) > 0)) {
             val prefix = cacheKey.substringBeforeLast('|', cacheKey.substringBeforeLast(':', ""))
-            val sameNamespaceCandidates = if (prefix.isNotEmpty()) {
-                ramCache.filterKeys { it.startsWith(prefix) }
+            val sameNamespaceCandidates = LinkedHashMap<String, String>()
+            if (prefix.isNotEmpty()) {
+                sameNamespaceCandidates.putAll(ramCache.filterKeys { it.startsWith(prefix) })
             } else {
-                ramCache
+                sameNamespaceCandidates.putAll(ramCache)
             }
+            sameNamespaceCandidates.putAll(SelfLearningDatabase.getSnapshotMap(context))
             val fuzzy = CostOptimizationEngine.findFuzzyMatch(normalizedSource, sameNamespaceCandidates)
             if (fuzzy != null) {
                 ramCache[cacheKey] = fuzzy.translation
@@ -142,10 +170,23 @@ object PhoneTranslationCache {
     }
 
     @Synchronized
-    fun put(context: Context?, cacheKey: String, translated: String) {
+    fun put(context: Context?, cacheKey: String, translated: String, sourceText: String = "") {
         if (translated.isBlank()) return
         ensureLoaded(context)
         ramCache[cacheKey] = translated
+        val extractedSource = sourceText.ifBlank {
+            val pipeIdx = cacheKey.lastIndexOf('|')
+            val colonIdx = cacheKey.lastIndexOf(':')
+            val splitAt = maxOf(pipeIdx, colonIdx)
+            if (splitAt >= 0 && splitAt + 1 < cacheKey.length) cacheKey.substring(splitAt + 1) else ""
+        }
+        if (extractedSource.isNotBlank()) {
+            SelfLearningDatabase.learnOrUpsert(
+                context = context,
+                sourceText = extractedSource,
+                translatedText = translated
+            )
+        }
         if (context != null) {
             try {
                 val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -165,6 +206,7 @@ object PhoneTranslationCache {
     @Synchronized
     fun clear(context: Context?) {
         ramCache.clear()
+        SelfLearningDatabase.resetForTest()
         if (context != null) {
             try {
                 context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -177,7 +219,7 @@ object PhoneTranslationCache {
     @Synchronized
     fun size(context: Context? = null): Int {
         ensureLoaded(context)
-        return ramCache.size
+        return ramCache.size + SelfLearningDatabase.size(context)
     }
 }
 
@@ -254,6 +296,7 @@ object StandaloneTranslator {
      */
     suspend fun preWarm(context: Context?, sourceLang: String) = withContext(Dispatchers.Default) {
         try {
+            SelfLearningDatabase.ensureInitialized(context)
             ChineseDialogueBank.totalEntries
             PhoneTranslationCache.size(context)
             val translator = getOrCreateTranslator(sourceLang)
@@ -510,34 +553,37 @@ object StandaloneTranslator {
         )
         SessionState.activeModelName.value = route.model
 
+        val correctedTexts = texts.map { SelfLearningDatabase.preprocessAndCorrectOcr(it) }
         overrideGeminiTranslator?.let { custom ->
-            val out = custom(texts, sourceLang, profile, mode, glossary)
-            val label = when (route.model) {
-                PRO_MODEL -> "Gemini Pro (Chính xác cao)"
-                FAST_MODEL -> "Gemini Flash-Lite"
-                else -> "Gemini Flash"
+            val out = custom(correctedTexts, sourceLang, profile, mode, glossary)
+            correctedTexts.zip(out).forEach { (src, vi) ->
+                SelfLearningDatabase.learnOrUpsert(
+                    context = null,
+                    sourceText = src,
+                    translatedText = vi
+                )
             }
             return@withContext TranslationOutcome(
                 translations = out,
                 elapsedMs = (monotonicMs() - started).coerceAtLeast(1L),
-                engineLabel = label,
+                engineLabel = "Gemini Flash-Lite",
                 isFinal = true,
-                modelUsed = route.model
+                modelUsed = FAST_MODEL
             )
         }
         if (apiKey.isBlank()) {
-            throw IOException("Chưa có khóa Gemini API trên điện thoại. Hãy nhập khóa hoặc dùng chế độ On-Device Ngoại tuyến.")
+            throw IOException("Chưa có khóa Gemini API trên điện thoại. Hãy nhập khóa hoặc dùng Chế độ 1: Dịch thuần từ Kho.")
         }
-        val model = route.model
+        val model = FAST_MODEL
         val contextSnapshot = synchronized(recentContext) { recentContext.toList() }
         val payload = buildGeminiRequestJson(
-            texts = texts,
+            texts = correctedTexts,
             sourceLang = sourceLang,
             profile = profile,
-            mode = mode,
+            mode = "fast",
             glossary = glossary,
             contextItems = contextSnapshot,
-            isProEscalated = route.isProEscalated
+            isProEscalated = false
         )
         val request = Request.Builder()
             .url("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
@@ -554,24 +600,32 @@ object StandaloneTranslator {
                     else -> throw IOException("Máy chủ Gemini tạm thời không phản hồi (${response.code}).")
                 }
             }
-            val rawTranslations = parseGeminiResponseJson(rawBody, texts.size)
-            val translations = applyGlossaryPostProcess(texts, rawTranslations, glossaryRaw)
+            val rawTranslations = parseGeminiResponseJson(rawBody, correctedTexts.size)
+            val translations = applyGlossaryPostProcess(correctedTexts, rawTranslations, glossaryRaw)
             synchronized(recentContext) {
-                texts.zip(translations).forEach { (src, vi) ->
+                correctedTexts.zip(translations).forEach { (src, vi) ->
                     recentContext.addLast(src to vi)
                     while (recentContext.size > 4) recentContext.removeFirst()
                 }
             }
-            val elapsed = (monotonicMs() - started).coerceAtLeast(1L)
-            val label = when (model) {
-                PRO_MODEL -> "Gemini Pro (Chính xác cao)"
-                FAST_MODEL -> "Gemini Flash-Lite"
-                else -> "Gemini Flash"
+            texts.indices.forEach { idx ->
+                val rawSrc = texts[idx]
+                val correctedSrc = correctedTexts[idx]
+                val vi = translations.getOrNull(idx).orEmpty()
+                if (vi.isNotBlank()) {
+                    SelfLearningDatabase.learnOrUpsert(
+                        context = null,
+                        sourceText = correctedSrc,
+                        translatedText = vi,
+                        rawOcrBeforeCorrection = rawSrc
+                    )
+                }
             }
+            val elapsed = (monotonicMs() - started).coerceAtLeast(1L)
             TranslationOutcome(
                 translations = translations,
                 elapsedMs = elapsed,
-                engineLabel = label,
+                engineLabel = "Gemini Flash-Lite",
                 isFinal = true,
                 modelUsed = model
             )
