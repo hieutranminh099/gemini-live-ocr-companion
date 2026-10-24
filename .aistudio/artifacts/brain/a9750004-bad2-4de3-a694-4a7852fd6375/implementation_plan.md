@@ -1,132 +1,108 @@
-# Tự Động Quét & Kết Nối Thiết Bị Qua Mạng LAN (UDP Broadcast)
+# Tối ưu Độ trễ Siêu tốc & Kho Hội thoại Tiếng Trung Nạp sẵn trên Điện thoại
 
-Bổ sung cơ chế phát tín hiệu và khám phá thiết bị tự động trong mạng nội bộ (LAN) bằng giao thức UDP Broadcast kết hợp phản hồi trực tiếp (Unicast Probe Reply), giúp ứng dụng Android tự động tìm thấy máy tính Windows, tự động ghép cặp bảo mật qua TLS và kết nối ngay chỉ với một chạm vào nút **"Tự động quét thiết bị"**.
+Nâng cấp bộ máy dịch tự động độc lập trên điện thoại để đạt tốc độ phản hồi tức thì (`< 1ms` với các câu/cụm hội thoại phổ biến được nạp sẵn và `< 150–350ms` cho câu mới), kết hợp kho dữ liệu hội thoại tiếng Trung chuyên sâu cho phim Hoa ngữ, hoạt hình (donghua), truyện tranh (manhua) và game.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> Các quyết định sản phẩm và kỹ thuật dưới đây đã được thống nhất dựa trên lựa chọn của bạn:
+> Các quyết định thiết kế dưới đây đã được thống nhất dựa trên lựa chọn của bạn trước khi triển khai:
 
-- **Giao thức khám phá mạng LAN**: Sử dụng **UDP Broadcast kết hợp phản hồi Unicast trực tiếp** (cổng UDP `8767`) bằng thư viện chuẩn của Python và Android (`socket` / `DatagramSocket`), không phụ thuộc thư viện ngoài.
-- **Tự động ghép cặp & kết nối ngay**: Khi tìm thấy máy tính trong mạng LAN, Android tự động xác minh chứng chỉ TLS (`SHA-256 pin`), tự động hoàn tất ghép cặp thông qua vé xác thực nội bộ (`lan_ticket`) nếu chưa ghép cặp (hoặc cập nhật IP mới nếu đã ghép cặp trước đó) và kết nối ngay.
-- **Hành vi khi quét thấy một hoặc nhiều PC**: Nếu chỉ có 1 máy tính phản hồi trong mạng LAN, ứng dụng tự động ghép cặp và kết nối ngay lập tức; nếu phát hiện từ 2 máy tính trở lên, ứng dụng hiển thị danh sách máy tính (tên máy, IP:Port) để người dùng chạm chọn.
+- **Kho hội thoại nạp sẵn tập trung chuyên sâu vào tiếng Trung (Giản thể & Phồn thể)**: Tích hợp sẵn bộ dữ liệu lớn các câu thoại, thành ngữ, xưng hô, câu cảm thán, thuật ngữ tu tiên/cổ trang/hiện đại và giao diện thường gặp trong phim Hoa ngữ, truyện tranh và game để trả kết quả ngay lập tức mà không tốn thời gian suy luận AI.
+- **Đối chiếu thông minh dưới 1ms (Khớp chính xác, Chuẩn hóa bỏ dấu câu & Ghép cụm từ/Mẫu câu)**: Tự động loại bỏ dấu câu/ký tự nhiễu OCR ở hai đầu, đối chiếu toàn câu hoặc lắp ghép các vế câu ngắn và mẫu câu thông dụng (ví dụ: mẫu câu hỏi, cảm thán, xưng hô + hành động) trong bộ nhớ RAM.
+- **Tối ưu hóa toàn diện đường truyền dịch tự động độc lập**:
+  1. **Zero-Debounce (`0ms`) trên điện thoại**: Bỏ hoàn toàn thời gian chờ ổn định chữ đối với các câu khớp kho nạp sẵn/cache và giảm chờ xuống mức tối thiểu cho dịch cục bộ ML Kit trên máy.
+  2. **Thu phóng thông minh ảnh OCR (Adaptive ROI Downscaling)**: Tự động thu gọn kích thước ảnh chụp dải phụ đề về độ phân giải tối ưu trước khi đưa vào bộ nhận diện chữ, giúp giảm 35–50% thời gian chạy OCR cục bộ mà vẫn giữ độ nét của chữ Hán.
+  3. **Làm ấm trước (Pre-Warm) bộ nhận diện OCR & ML Kit ngay khi mở ứng dụng**: Khởi tạo sẵn mô hình nhận diện chữ Hán và bộ dịch trên nền để loại bỏ độ trễ khởi động ở khung hình đầu tiên.
 
 ---
 
 ## 1. Overview & Core Concept
 
 - **What It Does**:
-  - **Trên Windows Server**: Khi chương trình khởi chạy, một dịch vụ UDP Discovery chạy ngầm sẽ định kỳ phát tín hiệu thông báo sự hiện diện của máy chủ (`IP`, `Port`, `Tên máy tính`, `Dấu vân tay chứng chỉ TLS SHA-256`, `Vé ghép cặp LAN tạm thời`) trong mạng LAN, đồng thời lắng nghe yêu cầu quét chủ động từ điện thoại để phản hồi ngay lập tức.
-  - **Trên Android**: Cung cấp nút **"Tự động quét thiết bị"** nổi bật ở cả màn hình chính và tab **Kết nối**. Khi người dùng nhấn nút, điện thoại phát gói tin dò tìm UDP và lắng nghe tín hiệu từ PC. Ngay khi tìm thấy PC, ứng dụng tự động ghép cặp qua TLS và sẵn sàng dịch màn hình mà không cần nhập IP, chứng chỉ hay mã 6 số thủ công.
-- **Target Audience / Persona**: Người dùng sử dụng Gemini Live OCR Translator trên điện thoại Android và máy tính Windows trong cùng mạng Wi-Fi/LAN muốn kết nối nhanh chóng mỗi khi mở ứng dụng hoặc khi địa chỉ IP của máy tính thay đổi do DHCP.
-- **Key Value**: Loại bỏ hoàn toàn thao tác nhập IP:Port, dấu vân tay SHA-256 hoặc quét QR thủ công, đồng thời tự động khắc phục tình trạng mất kết nối khi router đổi IP nội bộ của máy tính.
+  - Nạp sẵn vào bộ nhớ ứng dụng hàng trăm câu hội thoại, mẫu câu giao tiếp và cụm từ tiếng Trung xuất hiện với tần suất cao nhất trong phim ảnh, truyện tranh (manhua) và game (hiện đại, cổ trang, kiếm hiệp/tu tiên, học đường, hành động).
+  - Khi người dùng xem phim hoặc đọc truyện có phụ đề tiếng Trung, bộ đối chiếu siêu tốc (`< 1ms`) sẽ nhận diện ngay lập tức câu thoại hoàn chỉnh hoặc ghép các vế câu quen thuộc để hiển thị bản dịch tiếng Việt tự nhiên ngay trên khung hình đầu tiên mà không cần chờ ML Kit hay Gemini.
+  - Với những câu dài và phức tạp chưa có trong kho nạp sẵn, đường truyền hình ảnh và mô hình dịch cục bộ đã được làm ấm sẵn cùng ảnh chụp thu gọn tối ưu giúp giảm tối đa thời gian từ lúc chữ xuất hiện đến lúc vẽ bản dịch.
+- **Target Audience / Persona**: Người dùng xem phim Hoa ngữ, donghua, đọc manhua hoặc chơi game tiếng Trung trực tiếp trên điện thoại cần phụ đề tiếng Việt hiện ra gần như tức thời theo từng lời thoại.
+- **Key Value**: Đưa độ trễ hiển thị của các câu thoại thông dụng về gần như bằng `0ms` sau khi đọc OCR, đồng thời cắt giảm đáng kể thời gian xử lý OCR và dịch máy đối với các câu thoại mới.
 
 ---
 
 ## 2. User Experience & Visual Design
 
 - **Key User Flows**:
-  1. **Quét và tự động kết nối (1 máy tính trong LAN)**:
-     - Người dùng mở ứng dụng Android, nhấn nút **"Tự động quét thiết bị"** tại tab **Kết nối** (hoặc ngay trên thẻ trạng thái ở tab **Dịch trực tiếp** khi chưa ghép cặp).
-     - Nút chuyển sang trạng thái đang quét kèm biểu tượng radar/vòng xoay tiến trình: *"Đang tìm máy tính trong mạng LAN…"*.
-     - Khi phát hiện duy nhất 1 máy tính, ứng dụng tự động xác thực chứng chỉ TLS, lưu thông tin ghép cặp (hoặc cập nhật IP mới), kích hoạt kiểm tra kết nối và hiển thị thông báo: *"Đã tự động kết nối với <Tên PC> (<IP:Port>)"*.
-  2. **Quét và chọn máy tính (Nhiều máy tính trong LAN)**:
-     - Nếu trong thời gian quét phát hiện từ 2 máy tính trở lên cùng chạy Gemini OCR, giao diện hiển thị danh sách các thẻ máy tính tìm thấy (gồm tên máy, địa chỉ `IP:Port`, và 8 ký tự đầu của chứng chỉ SHA-256).
-     - Người dùng chạm vào máy tính mong muốn để tự động ghép cặp và kết nối ngay.
-  3. **Không tìm thấy máy tính (Fallback an toàn)**:
-     - Nếu hết thời gian quét (~2.5 giây) mà không nhận được phản hồi UDP, ứng dụng hiển thị hướng dẫn rõ ràng về kiểm tra Wi-Fi/Firewall và giữ nguyên phần ghép cặp bằng QR / liên kết / mã 6 số truyền thống ở bên dưới.
+  1. **Khởi động & Làm ấm tự động**: Ngay khi mở ứng dụng, hệ thống tự động nạp kho hội thoại tiếng Trung vào RAM và làm ấm bộ nhận diện chữ + bộ dịch cục bộ trong nền.
+  2. **Dịch tự động tức thì khi xem phim / đọc truyện**: Khi phụ đề tiếng Trung xuất hiện, nếu câu thoại khớp với kho hội thoại nạp sẵn (dù có khác biệt dấu câu như `！`, `？`, `…`, `。` hay khoảng trắng), bản dịch tiếng Việt mượt mà hiển thị ngay tức khắc (`< 1ms` tra cứu, `0ms` chờ debounce).
+  3. **Quản lý & Tùy chỉnh Kho Hội thoại Nạp sẵn**: Trên màn hình chính và tab **Tùy chỉnh**, người dùng có thể bật/tắt kho hội thoại tiếng Trung nạp sẵn, xem số lượng mẫu câu đang hoạt động, xem thống kê tỷ lệ khớp tức thì và tìm kiếm/bổ sung thêm câu thoại yêu thích.
 - **Visual Identity & Theme**:
-  - **Aesthetic Direction**: Giữ vững phong cách **Dark Utilitarian Precision** hiện có của ứng dụng với nền tối sâu và điểm nhấn xanh bạc hà sắc nét.
-  - **Color Palette & Mood**:
-    - Background chính: `#0B1218` (`--background`)
-    - Bề mặt thẻ (Panel): `#14212B` (`--surface`)
-    - Điểm nhấn chính (Primary Accent): `#6EE7C7` (`--primary` - Mint)
-    - Điểm nhấn phụ (Secondary): `#F0B976` (`--secondary` - Warm Amber)
-    - Văn bản phụ (Muted): `#98ACB9` (`--muted`)
-  - **Component Styling & Layout**:
-    - Thẻ **"Tự động quét thiết bị"** đặt ở vị trí ưu tiên cao nhất trong tab **Kết nối** với bo góc `22.dp`, nút bấm chính cao `52.dp` bo góc `16.dp`, biểu tượng `Icons.Outlined.Radar` / `Icons.Outlined.WifiFind`, đảm bảo vùng chạm tối thiểu `48.dp`.
+  - *Aesthetic Direction*: Giữ vững phong cách Dark Utility hiện đại, sắc nét và tập trung vào thông số độ trễ thời gian thực.
+  - *Color Palette & Mood*: Nền tối sâu (`#0B1218`), bề mặt thẻ (`#14212B`), điểm nhấn xanh bạc hà (`#6EE7C7`) cho trạng thái khớp tức thì `< 1ms`, và cam hổ phách (`#F0B976`) cho cảnh báo hoặc trạng thái tải.
+  - *Typography & Hierarchy*: Hiển thị rõ ràng thời gian từng chặng (`OCR ms • Kho nạp sẵn <1ms / Cục bộ ms • Tổng khung→vẽ ms`) ngay trên thẻ phiên dịch và thanh phản hồi nổi.
+- **Interactive Feedback & Motion**:
+  - Hiển thị huy hiệu trạng thái số lượng câu hội thoại tiếng Trung đã nạp sẵn và số lượt khớp tức thì trong phiên dịch.
+  - Cho phép thử nhanh (Test thử câu tiếng Trung) hoặc tra cứu nhanh kho câu nạp sẵn ngay trong mục cài đặt.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Kết hợp UDP Broadcast định kỳ (Beacon) và UDP Probe phản hồi trực tiếp (Unicast Reply)**
-  - *Chosen Approach*: Máy chủ Windows vừa phát broadcast định kỳ mỗi 2 giây tới cổng UDP `8767`, vừa lắng nghe gói `gemocr_discover` trên cổng `8767` để trả lời trực tiếp (unicast) về đúng địa chỉ `(ip, port)` của điện thoại.
-  - *Why*: Một số router Wi-Fi hạn chế hoặc làm trễ gói broadcast thụ động một chiều. Khi điện thoại chủ động gửi gói probe và máy chủ trả lời unicast trực tiếp về địa chỉ nguồn của gói tin, thời gian tìm thấy máy tính giảm xuống dưới `150ms` và máy chủ xác định chính xác địa chỉ IP LAN cùng dải mạng với điện thoại.
-  - *Alternatives Considered*: Chỉ dùng mDNS (`zeroconf`) — đòi hỏi cài thêm thư viện ngoài trên Windows và đôi khi bị chặn multicast trên mạng Wi-Fi khách.
-- **Decision 2: Ghép cặp LAN không chạm (Zero-Click LAN Pairing) vẫn giữ nguyên bảo mật TLS Certificate Pinning**
-  - *Chosen Approach*: Gói tin UDP Beacon từ máy chủ chứa dấu vân tay chứng chỉ TLS (`pin` SHA-256 64 ký tự) và một mã vé ghép cặp LAN tự xoay vòng (`lan_ticket`) do máy chủ ký/quản lý trong bộ nhớ. Khi Android kết nối tới `https://<IP>:<Port>/v1/pair`, kết nối TLS vẫn được kiểm tra nghiêm ngặt bằng `SecureConnection.client(pin)` trước khi gửi `lan_ticket` để nhận `token` phiên 256-bit.
-  - *Why*: Đáp ứng trải nghiệm "tự động kết nối ngay khi tìm thấy PC" mà không làm suy giảm lớp mã hóa TLS hay làm hỏng cơ chế ghép cặp bằng mã 6 số / QR hiện có.
+- **Decision 1: Kiến trúc đối chiếu 3 lớp cho Kho Hội thoại Tiếng Trung (`< 1ms`)**
+  - *Chosen Approach*: Kết hợp (1) **Khớp chính xác sau chuẩn hóa** (bỏ dấu câu `，。！？…—~「」『』` và khoảng trắng thừa, đồng bộ Giản thể/Phồn thể phổ biến), (2) **Ghép vế câu phân tách bằng dấu câu** (ví dụ câu gồm 2 mệnh đề ngăn bởi dấu phẩy hoặc khoảng trắng như `等一下，我马上来` sẽ ghép tức thì từ `等一下` + `我马上来`), và (3) **Khớp mẫu câu động (Template Patterns)** cho các cấu trúc câu thoại lặp lại (`别[X]了`, `你是谁`, `怎么回事`, `[X]大人`, `[X]师兄`, v.v.), đồng thời giữ lại dấu cảm thán/nghi vấn tương ứng ở đầu ra tiếng Việt.
+  - *Why*: Phụ đề phim và truyện tranh thường ghép 2 câu ngắn trên cùng một dòng hoặc thay đổi dấu chấm than/dấu hỏi. Cơ chế ghép vế câu và chuẩn hóa giúp tăng tỷ lệ trúng (hit-rate) lên gấp nhiều lần so với chỉ so khớp chuỗi cứng, trong khi vẫn giữ thời gian chạy dưới `1ms`.
+  - *Alternatives Considered*: Chỉ khớp chuỗi chính xác 100% (bị trượt khi OCR dính hoặc mất dấu chấm câu) hoặc thay thế từng từ rời rạc cho mọi câu dài (dễ gây dịch word-by-word thiếu tự nhiên).
+- **Decision 2: Bỏ Debounce (`0ms`) cho dịch cục bộ & Thu phóng ảnh OCR thông minh**
+  - *Chosen Approach*:
+    - Kiểm tra kho hội thoại nạp sẵn và bộ nhớ cache **trước** bước chờ debounce. Nếu khớp toàn bộ hoặc các mệnh đề đều nằm trong kho, vẽ ngay lập tức (`0ms` debounce).
+    - Khi ở chế độ Độc lập trên điện thoại kết hợp Turbo, giảm thời gian chờ ổn định chữ xuống `0ms` cho lần xuất hiện đầu tiên và chỉ giữ ngưỡng chống nháy nhỏ (`35ms`) khi chữ đang biến đổi liên tục từng khung hình.
+    - Với ảnh vùng phụ đề (ROI) có chiều rộng lớn hơn `960px` (hoặc chiều cao lớn), tự động thu phóng ảnh bằng bộ lọc nhanh trước khi đưa vào ML Kit OCR và quy đổi ngược tọa độ khung chữ về kích thước gốc.
+  - *Why*: Thời gian chạy ML Kit OCR tỷ lệ thuận với số điểm ảnh. Giảm kích thước vùng ảnh phụ đề quá lớn giúp cắt giảm 30–50ms mỗi khung hình mà không ảnh hưởng độ chính xác nhận diện chữ Hán cỡ phụ đề.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-### Architecture & Component Diagram
+- **Architecture & Component Diagram**:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        WINDOWS COMPANION SERVER                         │
-│                                                                         │
-│  ┌──────────────────────────┐        ┌───────────────────────────────┐  │
-│  │  LAN Discovery Service   │        │   FastAPI Device TLS Server   │  │
-│  │  (UDP Socket :8767)      │        │   (HTTPS / WSS :8765)         │  │
-│  │  • Periodic LAN Beacon   │        │   • POST /v1/pair             │  │
-│  │  • Unicast Probe Responder│       │     (6-digit code OR ticket)  │  │
-│  └────────────┬─────────────┘        │   • GET  /health              │  │
-│               │                      │   • WSS  /v1/stream           │  │
-└───────────────┼──────────────────────┴───────────────┬───────────────┘
-                │ UDP Broadcast / Unicast (:8767)      │ TLS 1.2+ (Pinned SHA-256)
-                ▼                                      ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          ANDROID APPLICATION                            │
-│                                                                         │
-│  ┌──────────────────────────┐        ┌───────────────────────────────┐  │
-│  │   LanScanner (UDP :8767) │───────▶│      SecureConnection         │  │
-│  │  • Send gemocr_discover  │        │  • Verify TLS SHA-256 Pin     │  │
-│  │  • Collect Beacons       │        │  • Reuse token if pin matches │  │
-│  │  • Deduplicate by Pin    │        │  • Auto-pair via lan_ticket   │  │
-│  └────────────┬─────────────┘        └───────────────┬───────────────┘  │
-│               │                                      │                  │
-│               ▼                                      ▼                  │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │                MainActivity / PairingScreen UI                    │  │
-│  │  • "Tự động quét thiết bị" Button (Home & Pairing Tabs)           │  │
-│  │  • Auto-connect on single PC / Selection Cards on multiple PCs    │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                   DỊCH TỰ ĐỘNG ĐỘC LẬP TRÊN ĐIỆN THOẠI                     │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      │
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 1. THU MÀN HÌNH & THU PHÓNG ẢNH OCR THÔNG MINH (Adaptive ROI Downscaling)  │
+│  • Chỉ cắt đúng dải phụ đề (ROI) từ bộ đệm khung hình phần cứng            │
+│  • Tự động thu gọn kích thước ảnh nếu bề ngang > 960px (giảm 35-50% ms OCR)│
+│  • Bộ nhận diện chữ Hán & ML Kit được làm ấm sẵn (Pre-warmed) trong RAM    │
+└─────────────────────────────────────┬──────────────────────────────────────┘
+                                      │
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 2. BỘ ĐỐI CHIẾU KHO HỘI THOẠI TIẾNG TRUNG NẠP SẴN (< 1ms, 0ms Debounce)    │
+│  ┌─────────────────────────┐  ┌────────────────────────┐  ┌──────────────┐ │
+│  │ Lớp 1: Khớp chuẩn hóa   │→ │ Lớp 2: Ghép mệnh đề    │→ │ Lớp 3: Mẫu   │ │
+│  │ (Bỏ dấu câu, Giản/Phồn) │  │ (Tách theo dấu phẩy/   │  │ câu thoại &  │ │
+│  │ Phim, Truyện, Game      │  │ khoảng trắng & nối câu)│  │ cụm từ cố định│ │
+│  └─────────────────────────┘  └────────────────────────┘  └──────────────┘ │
+└──────────────────┬──────────────────────────────────────┬──────────────────┘
+                   │ Khớp hoàn toàn (< 1ms)               │ Chưa có trong kho
+                   ▼                                      ▼
+┌──────────────────────────────────────┐ ┌───────────────────────────────────┐
+│ HIỂN THỊ TỨC THÌ LÊN LỚP PHỦ (0ms)   │ │ 3. DỊCH CỤC BỘ ML KIT ĐÃ LÀM ẤM   │
+│  • Vẽ ngay lập tức trên khung OCR    │ │  • Dịch ngay lập tức (Zero-Wait   │
+│    hiện tại, không gọi AI            │ │    Initial Debounce trong Turbo)  │
+│  • Lưu vào RAM LRU Cache             │ │  • Áp dụng cụm từ cố định tiếng   │
+│                                      │ │    Trung & tinh chỉnh Gemini      │
+└──────────────────────────────────────┘ └───────────────────────────────────┘
 ```
 
-### Data Model & Protocol Payloads
-
-1. **Gói dò tìm từ Android (`gemocr_discover`)**:
-   ```json
-   {
-     "type": "gemocr_discover",
-     "protocol": 1
-   }
-   ```
-2. **Gói phản hồi / phát sóng từ Windows (`gemocr_beacon`)**:
-   ```json
-   {
-     "type": "gemocr_beacon",
-     "protocol": 1,
-     "name": "DESKTOP-PC",
-     "host": "192.168.1.10:8765",
-     "addresses": ["192.168.1.10"],
-     "port": 8765,
-     "pin": "<64-hex-sha256-certificate-fingerprint>",
-     "lan_ticket": "<ephemeral-lan-pairing-ticket>"
-   }
-   ```
-3. **Mở rộng yêu cầu ghép cặp (`POST /v1/pair`)**:
-   - Chấp nhận `code` 6 số truyền thống **hoặc** `lan_ticket` hợp lệ đang hoạt động trên `Runtime.pairing`.
-   - Nếu thiết bị Android đã có sẵn `token` hợp lệ với cùng chứng chỉ `pin`, Android chỉ cần cập nhật `settings.host` sang địa chỉ `IP:Port` mới tìm thấy và kiểm tra kết nối mà không cần tạo lại thiết bị trùng lặp trên máy chủ.
-
-### Interactive Component & State Mapping
-
-- **Nút `"Tự động quét thiết bị"` (`testTag = "auto_scan_devices_button"`)**:
-  - Khi nhấn: Chuyển trạng thái `scanning = true`, xóa danh sách máy tính tạm thời, gọi `LanScanner.discover()` để gửi gói UDP broadcast và lắng nghe phản hồi.
-  - Nếu tìm thấy **1 máy tính**: Gọi `SecureConnection.connectOrPairDiscovered(...)`, lưu `host`, `pin`, `token` vào `AppSettings`, cập nhật `paired = true`, `SessionState.status.value = "Đã tự động kết nối với <Tên PC>"`, và hiển thị thông báo thành công.
-  - Nếu tìm thấy **nhiều máy tính**: Hiển thị danh sách thẻ máy tính (`testTag = "discovered_pc_item_<host>"`); khi người dùng chọn 1 thẻ, thực hiện ghép cặp & kết nối ngay với máy tính đó.
-  - Nếu **không tìm thấy**: Đặt `scanning = false` và hiển thị thông báo hướng dẫn kiểm tra mạng LAN / tường lửa.
+- **Data Model & State**:
+  - **Kho Hội thoại Tiếng Trung Nạp sẵn (Preloaded Chinese Dialogue Corpus)**:
+    - Phân nhóm theo ngữ cảnh phổ biến:
+      - *Giao tiếp & Hội thoại hàng ngày trong phim*: Chào hỏi, hỏi đáp, đồng ý/từ chối, cảm xúc, thúc giục (`等一下`, `怎么回事`, `你没事吧`, `快走`, `别过来`, `我知道了`, `开玩笑的吧`, `到底怎么了`, `放开我`, `跟我们走一趟`, v.v.).
+      - *Cổ trang, Kiếm hiệp & Tu tiên (Manhua / Donghua)*: Xưng hô, chiêu thức, cảnh giới, mệnh lệnh (`师兄`, `师父`, `掌门`, `陛下`, `找死`, `手下留情`, `多谢前辈`, `不知死活`, `突破境界`, `遵命`, v.v.).
+      - *Truyện tranh Hiện đại, Tổng tài, Học đường & Game*: Thoại kịch tính, trạng thái hệ thống, nhiệm vụ (`不可能`, `为什么会这样`, `难以置信`, `任务完成`, `继续`, `设置`, `确认`, `取消`, v.v.).
+    - Hỗ trợ đồng thời chữ Hán Giản thể và các biến thể Phồn thể thường gặp trên phim/truyện Đài Loan, Hồng Kông.
+- **Interactive Component & State Mapping**:
+  - **Công tắc Kho Hội thoại Tiếng Trung Nạp sẵn**: Cho phép bật/tắt kho nạp sẵn và hiển thị số lượng câu/mẫu câu đang kích hoạt.
+  - **Bộ kiểm tra & tra cứu thử nhanh trong Cài đặt**: Ô nhập thử một câu thoại tiếng Trung bất kỳ để xem ngay kết quả khớp `< 1ms` từ kho hội thoại nạp sẵn hoặc từ điển cá nhân.
+  - **Bộ đếm Khớp tức thì (Instant Phrase Hits)**: Hiển thị trực quan trên màn hình chính số lần phụ đề được dịch tức thì từ kho nạp sẵn và bộ nhớ đệm mà không cần chờ mô hình dịch.

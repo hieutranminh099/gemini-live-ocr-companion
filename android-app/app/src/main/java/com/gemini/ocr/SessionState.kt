@@ -2,7 +2,7 @@ package com.gemini.ocr
 
 import kotlinx.coroutines.flow.MutableStateFlow
 
-/** Server-advertised mode; null availability keeps older companions explicitly unknown. */
+/** Server-advertised or standalone on-device mode; null availability keeps older companions explicitly unknown. */
 data class TranslationBackendState(
     val provider: String = "",
     val mode: String = "",
@@ -10,6 +10,9 @@ data class TranslationBackendState(
     val experimentalCliEnabled: Boolean = false,
 ) {
     val badge: String get() = when {
+        mode == "standalone_hybrid" -> "Độc lập trên điện thoại • ML Kit (<150ms) + Gemini Flash-Lite"
+        mode == "standalone_mlkit" -> "Độc lập ngoại tuyến • ML Kit On-Device (<150ms)"
+        mode == "standalone_gemini" -> "Độc lập trên điện thoại • Gemini Flash-Lite trực tiếp"
         mode == "cache_only" -> "Chỉ dùng cache / từ điển • Chưa bật dịch câu mới"
         mode == "cli_experimental" && experimentalCliEnabled -> when (translationAvailable) {
             true -> "CLI cá nhân thử nghiệm • Đã bật dịch câu mới"
@@ -32,11 +35,15 @@ object SessionState {
     val paused = MutableStateFlow(false)
     val status = MutableStateFlow("Sẵn sàng kết nối")
     val connected = MutableStateFlow(false)
+    val standaloneActive = MutableStateFlow(false)
+    val offlineModelStatus = MutableStateFlow("Gói ngoại tuyến tự động tải khi cần")
     val provider = MutableStateFlow("")
     val backend = MutableStateFlow(TranslationBackendState())
     val latency = MutableStateFlow(0L)
+    val instantMs = MutableStateFlow(0L)
     val blocks = MutableStateFlow(0)
     val cacheHits = MutableStateFlow(0)
+    val preloadedHits = MutableStateFlow(0)
     val ocrMs = MutableStateFlow(0L)
     val ocrFrames = MutableStateFlow(0)
     val ocrArea = MutableStateFlow(100)
@@ -48,4 +55,3 @@ object SessionState {
     val networkRtt = MutableStateFlow(0L)
     val frameToDraw = MutableStateFlow(0L)
 }
-

@@ -20,17 +20,47 @@ data class OcrBlock(val id: String, val text: String, val rect: Rect) {
 }
 
 class OcrProcessor(language: String) : AutoCloseable {
-    private val recognizer: TextRecognizer = when (language) {
-        "ja" -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
-        "zh" -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
-        "ko" -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
-        else -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    }
-    suspend fun process(bitmap: Bitmap, retainSourceFragments: Boolean = false): List<OcrBlock> {
-        val result = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await()
+    private val recognizer: TextRecognizer = createRecognizer(language)
+
+    suspend fun process(
+        bitmap: Bitmap,
+        retainSourceFragments: Boolean = false,
+        fastDownscale: Boolean = false
+    ): List<OcrBlock> {
+        val maxDim = maxOf(bitmap.width, bitmap.height)
+        val scale = if (fastDownscale && maxDim > MAX_OCR_DIMENSION) {
+            MAX_OCR_DIMENSION.toFloat() / maxDim.toFloat()
+        } else {
+            1f
+        }
+        val targetBitmap = if (scale < 0.95f) {
+            val scaledW = (bitmap.width * scale).toInt().coerceAtLeast(16)
+            val scaledH = (bitmap.height * scale).toInt().coerceAtLeast(16)
+            Bitmap.createScaledBitmap(bitmap, scaledW, scaledH, true)
+        } else {
+            bitmap
+        }
+        val result = try {
+            recognizer.process(InputImage.fromBitmap(targetBitmap, 0)).await()
+        } finally {
+            if (targetBitmap !== bitmap) {
+                targetBitmap.recycle()
+            }
+        }
+        val invScale = if (scale < 0.95f) 1f / scale else 1f
         var total = 0
         return result.textBlocks.flatMap { it.lines }.mapNotNull { block ->
-            val rect = block.boundingBox ?: return@mapNotNull null
+            val rawRect = block.boundingBox ?: return@mapNotNull null
+            val rect = if (invScale != 1f) {
+                Rect(
+                    (rawRect.left * invScale).toInt(),
+                    (rawRect.top * invScale).toInt(),
+                    (rawRect.right * invScale).toInt(),
+                    (rawRect.bottom * invScale).toInt()
+                )
+            } else {
+                rawRect
+            }
             val text = Normalizer.normalize(block.text, Normalizer.Form.NFKC).replace(Regex("\\s+"), " ").trim()
             // ML Kit sometimes does not supply confidence, so reject only known low-confidence lines.
             val confidence = block.confidence?.toDouble() ?: Double.NaN
@@ -47,5 +77,29 @@ class OcrProcessor(language: String) : AutoCloseable {
         }.sortedWith(compareBy({ it.rect.top / 24 }, { it.rect.left })).take(40)
             .mapIndexed { i, block -> block.copy(id = "b$i") }
     }
+
     override fun close() { recognizer.close() }
+
+    companion object {
+        private const val MAX_OCR_DIMENSION = 960
+
+        private fun createRecognizer(language: String): TextRecognizer = when (language) {
+            "ja" -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+            "zh" -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+            "ko" -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+            else -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        }
+
+        suspend fun preWarm(language: String) {
+            val client = createRecognizer(language)
+            val dummy = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+            try {
+                client.process(InputImage.fromBitmap(dummy, 0)).await()
+            } catch (_: Exception) {
+            } finally {
+                dummy.recycle()
+                client.close()
+            }
+        }
+    }
 }
