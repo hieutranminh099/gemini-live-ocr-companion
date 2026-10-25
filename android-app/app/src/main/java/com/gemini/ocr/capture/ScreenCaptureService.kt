@@ -21,6 +21,7 @@ import com.gemini.ocr.R
 import com.gemini.ocr.SessionState
 import com.gemini.ocr.TranslationBackendState
 import com.gemini.ocr.network.CostOptimizationEngine
+import com.gemini.ocr.network.GeminiApiException
 import com.gemini.ocr.network.PhoneTranslationCache
 import com.gemini.ocr.network.SelfLearningDatabase
 import com.gemini.ocr.network.StandaloneTranslator
@@ -745,11 +746,16 @@ class ScreenCaptureService : Service() {
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
+            // Record the cooldown so sendLatest() stops re-sending the same sentence on every OCR frame.
+            val failedAt = SystemClock.elapsedRealtime()
+            val failure = (error as? GeminiApiException)?.let {
+                retries.failed(retryKey(signature), it.code, it.message.orEmpty(), failedAt, it.retryAfterMs)
+            }
             pipeline.retry(token)
             pendingId = ""; pendingToken = null; pendingTexts = emptyMap(); pendingSince = 0; pendingSignature = ""; sentSignature = ""
             overlay?.busy(false)
-            SessionState.status.value = error.message ?: "Không thể dịch câu thoại mới. Kiểm tra Gemini API Key ở tab Tùy chỉnh."
-            overlay?.feedback(SessionState.status.value, true)
+            SessionState.status.value = failure?.status(failedAt) ?: error.message ?: "Không thể dịch câu thoại mới. Kiểm tra Gemini API Key ở tab Tùy chỉnh."
+            overlay?.feedback(failure?.feedback(failedAt) ?: SessionState.status.value, true)
         }
     }
     private fun onMessage(json: JSONObject) {

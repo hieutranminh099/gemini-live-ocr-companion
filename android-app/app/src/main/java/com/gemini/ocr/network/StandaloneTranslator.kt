@@ -711,9 +711,12 @@ object StandaloneTranslator {
             val rawBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 when (response.code) {
-                    429 -> throw IOException("Đạt giới hạn lượt gọi Gemini API (429).")
+                    429 -> throw GeminiApiException(
+                        "rate_limited", "Đạt giới hạn lượt gọi Gemini API (429).",
+                        GeminiApiException.parseRetryAfterMs(response.header("Retry-After"), rawBody)
+                    )
                     400, 401, 403 -> throw IOException("Khóa Gemini API hoặc mô hình không hợp lệ (${response.code}).")
-                    else -> throw IOException("Máy chủ Gemini tạm thời không phản hồi (${response.code}).")
+                    else -> throw GeminiApiException("provider_unavailable", "Máy chủ Gemini tạm thời không phản hồi (${response.code}).")
                 }
             }
             val rawTranslations = parseGeminiResponseJson(rawBody, correctedTexts.size)
