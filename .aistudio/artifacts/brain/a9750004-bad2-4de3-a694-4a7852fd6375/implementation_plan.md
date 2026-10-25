@@ -1,108 +1,126 @@
-# Tối ưu Độ trễ Siêu tốc & Kho Hội thoại Tiếng Trung Nạp sẵn trên Điện thoại
+# Dịch Độc Lập Phụ Đề Tiếng Trung (ZH → VI) Siêu Tốc ≤ 1000ms Trên Android & BlueStacks
 
-Nâng cấp bộ máy dịch tự động độc lập trên điện thoại để đạt tốc độ phản hồi tức thì (`< 1ms` với các câu/cụm hội thoại phổ biến được nạp sẵn và `< 150–350ms` cho câu mới), kết hợp kho dữ liệu hội thoại tiếng Trung chuyên sâu cho phim Hoa ngữ, hoạt hình (donghua), truyện tranh (manhua) và game.
+Giải pháp dịch phụ đề trực tiếp độc lập hoàn toàn trên thiết bị Android và trình giả lập **BlueStacks** (không cần kết nối PC), chuyên biệt hóa 100% cho cặp ngôn ngữ **Tiếng Trung (Giản thể & Phồn thể) → Tiếng Việt**, chống tràn RAM tuyệt đối bằng **SQLite B-Tree Index + LruCache** và ép độ trễ toàn trình (End-to-End Latency) xuống **≤ 1000ms**.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> Các quyết định thiết kế dưới đây đã được thống nhất dựa trên lựa chọn của bạn trước khi triển khai:
+> Các quyết định kiến trúc và trải nghiệm người dùng đã được xác nhận và khóa chặt theo yêu cầu kỹ thuật:
 
-- **Kho hội thoại nạp sẵn tập trung chuyên sâu vào tiếng Trung (Giản thể & Phồn thể)**: Tích hợp sẵn bộ dữ liệu lớn các câu thoại, thành ngữ, xưng hô, câu cảm thán, thuật ngữ tu tiên/cổ trang/hiện đại và giao diện thường gặp trong phim Hoa ngữ, truyện tranh và game để trả kết quả ngay lập tức mà không tốn thời gian suy luận AI.
-- **Đối chiếu thông minh dưới 1ms (Khớp chính xác, Chuẩn hóa bỏ dấu câu & Ghép cụm từ/Mẫu câu)**: Tự động loại bỏ dấu câu/ký tự nhiễu OCR ở hai đầu, đối chiếu toàn câu hoặc lắp ghép các vế câu ngắn và mẫu câu thông dụng (ví dụ: mẫu câu hỏi, cảm thán, xưng hô + hành động) trong bộ nhớ RAM.
-- **Tối ưu hóa toàn diện đường truyền dịch tự động độc lập**:
-  1. **Zero-Debounce (`0ms`) trên điện thoại**: Bỏ hoàn toàn thời gian chờ ổn định chữ đối với các câu khớp kho nạp sẵn/cache và giảm chờ xuống mức tối thiểu cho dịch cục bộ ML Kit trên máy.
-  2. **Thu phóng thông minh ảnh OCR (Adaptive ROI Downscaling)**: Tự động thu gọn kích thước ảnh chụp dải phụ đề về độ phân giải tối ưu trước khi đưa vào bộ nhận diện chữ, giúp giảm 35–50% thời gian chạy OCR cục bộ mà vẫn giữ độ nét của chữ Hán.
-  3. **Làm ấm trước (Pre-Warm) bộ nhận diện OCR & ML Kit ngay khi mở ứng dụng**: Khởi tạo sẵn mô hình nhận diện chữ Hán và bộ dịch trên nền để loại bỏ độ trễ khởi động ở khung hình đầu tiên.
+- **Confirmed Decision 1 (Giao diện & Phạm vi hoạt động)**: Chuyển đổi hoàn toàn giao diện chính sang **Dịch độc lập trực tiếp trên Android / BlueStacks** với 2 chế độ dịch rõ ràng (**Chế độ 1: Kho Phụ Đề + Gemini Hybrid** và **Chế độ 2: Chỉ dùng Gemini Direct**), loại bỏ sự phụ thuộc vào máy tính.
+- **Confirmed Decision 2 (Tối giản ngôn ngữ ZH → VI)**: Loại bỏ toàn bộ thư viện ML Kit OCR ngoại ngữ dư thừa (Anh, Nhật, Hàn) và bộ dịch ML Kit On-Device nặng nề trong `build.gradle.kts`, chỉ giữ lại duy nhất **`com.google.mlkit:text-recognition-chinese`** (hỗ trợ cả chữ Hán Giản thể và Phồn thể) để giảm tối đa dung lượng APK và mức tiêu thụ RAM.
+- **Confirmed Decision 3 (Kiến trúc Kho phụ đề SQLite Anti-OOM + Self-Learning)**: Lưu trữ kho phụ đề Tiếng Trung (phim ảnh, cổ trang, tu tiên, kiếm hiệp, hiện đại) trong tệp tài nguyên nén nhẹ (`assets/zh_vi_subtitles.tsv`) và nạp vào cơ sở dữ liệu **SQLite (`subtitle_bank`)** trên `Dispatchers.IO` với chỉ mục B-Tree **`CREATE INDEX idx_zh_hash ON subtitle_bank(normalized_hash)`**. Trên RAM chỉ giữ **`android.util.LruCache` tối đa 300 câu** (< 2MB RAM), tự động học câu mới từ Gemini (**Self-Learning Cache**) và cho phép người dùng xem thống kê / tra cứu / xóa kho.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**:
-  - Nạp sẵn vào bộ nhớ ứng dụng hàng trăm câu hội thoại, mẫu câu giao tiếp và cụm từ tiếng Trung xuất hiện với tần suất cao nhất trong phim ảnh, truyện tranh (manhua) và game (hiện đại, cổ trang, kiếm hiệp/tu tiên, học đường, hành động).
-  - Khi người dùng xem phim hoặc đọc truyện có phụ đề tiếng Trung, bộ đối chiếu siêu tốc (`< 1ms`) sẽ nhận diện ngay lập tức câu thoại hoàn chỉnh hoặc ghép các vế câu quen thuộc để hiển thị bản dịch tiếng Việt tự nhiên ngay trên khung hình đầu tiên mà không cần chờ ML Kit hay Gemini.
-  - Với những câu dài và phức tạp chưa có trong kho nạp sẵn, đường truyền hình ảnh và mô hình dịch cục bộ đã được làm ấm sẵn cùng ảnh chụp thu gọn tối ưu giúp giảm tối đa thời gian từ lúc chữ xuất hiện đến lúc vẽ bản dịch.
-- **Target Audience / Persona**: Người dùng xem phim Hoa ngữ, donghua, đọc manhua hoặc chơi game tiếng Trung trực tiếp trên điện thoại cần phụ đề tiếng Việt hiện ra gần như tức thời theo từng lời thoại.
-- **Key Value**: Đưa độ trễ hiển thị của các câu thoại thông dụng về gần như bằng `0ms` sau khi đọc OCR, đồng thời cắt giảm đáng kể thời gian xử lý OCR và dịch máy đối với các câu thoại mới.
+- **What It Does**: Ứng dụng bắt khung hình vùng phụ đề trực tiếp trên điện thoại Android hoặc giả lập BlueStacks, nhận diện chữ Hán (Giản thể / Phồn thể) trong 40–80ms và dịch sang tiếng Việt tự nhiên trong < 1000ms bằng sự kết hợp giữa **Kho phụ đề SQLite B-Tree (< 5ms)** và **Gemini API tốc độ cao (`thinkingBudget = 0`)**.
+- **Target Audience / Persona**: Người xem phim Trung Quốc, hoạt hình 3D (donghua), đọc truyện tranh (manhua tu tiên, kiếm hiệp, cổ trang, hiện đại) hoặc chơi game tiếng Trung ngay trên điện thoại và BlueStacks cần bản dịch tiếng Việt mượt, đúng xưng hô Hán-Việt và không bao giờ gây đơ cảm ứng hay tràn bộ nhớ.
+- **Key Value**:
+  - **Độ trễ toàn trình ≤ 1000ms**: Tối ưu từ khâu đọc bộ đệm `ImageReader` (chỉ cắt ROI phụ đề, chuẩn `rowStride`/`pixelStride`, thu nhỏ chiều cao về `160px–240px`, so khớp pixel Frame Diffing 300ms) đến khâu tra kho SQLite B-Tree (`< 5ms`) và gọi Gemini (`thinkingBudget = 0`, HTTP/2 Keep-Alive, System Prompt < 40 tokens).
+  - **Chống tràn RAM & Chống đơ cảm ứng trên BlueStacks**: Không giữ `HashMap` khổng lồ trên RAM; cửa sổ phụ đề hoàn toàn trong suốt (`Color.TRANSPARENT`) và cho phép bấm xuyên qua (`FLAG_NOT_TOUCHABLE | FLAG_NOT_FOCUSABLE`).
 
 ---
 
 ## 2. User Experience & Visual Design
 
 - **Key User Flows**:
-  1. **Khởi động & Làm ấm tự động**: Ngay khi mở ứng dụng, hệ thống tự động nạp kho hội thoại tiếng Trung vào RAM và làm ấm bộ nhận diện chữ + bộ dịch cục bộ trong nền.
-  2. **Dịch tự động tức thì khi xem phim / đọc truyện**: Khi phụ đề tiếng Trung xuất hiện, nếu câu thoại khớp với kho hội thoại nạp sẵn (dù có khác biệt dấu câu như `！`, `？`, `…`, `。` hay khoảng trắng), bản dịch tiếng Việt mượt mà hiển thị ngay tức khắc (`< 1ms` tra cứu, `0ms` chờ debounce).
-  3. **Quản lý & Tùy chỉnh Kho Hội thoại Nạp sẵn**: Trên màn hình chính và tab **Tùy chỉnh**, người dùng có thể bật/tắt kho hội thoại tiếng Trung nạp sẵn, xem số lượng mẫu câu đang hoạt động, xem thống kê tỷ lệ khớp tức thì và tìm kiếm/bổ sung thêm câu thoại yêu thích.
+  1. **Màn hình chính (Dịch Độc Lập ZH → VI)**:
+     - Hiển thị trạng thái sẵn sàng của bộ nhận diện chữ Hán (`ML Kit Chinese OCR`) và số lượng câu trong Kho phụ đề SQLite (câu gốc nạp sẵn + câu tự học Self-Learning).
+     - Bộ chọn **2 Chế độ dịch độc lập**:
+       - **Chế độ 1: Kho Phụ Đề + Gemini (Hybrid Siêu Tốc)**: Tra cứu SQLite + LruCache (< 5ms, khớp nguyên câu hoặc tách ghép vế thông minh); nếu chưa có mới gọi Gemini và tự động lưu ngầm vào SQLite (`Self-Learning Cache`).
+       - **Chế độ 2: Chỉ dùng Gemini (Gemini Direct)**: Bỏ qua kho mẫu, gửi câu chữ Hán kèm 1 câu ngữ cảnh liền trước lên Gemini để dịch sát mạch phim nhất, giữ `LruCache(100)` trên RAM để không gọi lại API khi dòng phụ đề đang đứng yên.
+     - Thanh đo độ trễ trực tiếp theo thời gian thực: **`OCR: 52ms | Dịch: 4ms (Kho) / 310ms (Gemini) | Tổng: 56ms / 362ms`**.
+  2. **Màn hình Kho Phụ Đề SQLite & Kiểm Thử Tốc Độ**:
+     - Cho phép tra cứu thử tức thì (< 5ms) câu thoại Giản thể / Phồn thể từ SQLite, xem số câu đã tự học (Self-Learning), thêm câu mới hoặc xóa các câu tự học / làm mới bộ nhớ đệm.
+     - Nút chạy nhanh **Benchmark Độ Trễ & RAM** ngay trên giao diện để kiểm chứng tốc độ tra kho (< 10ms) và luồng dịch.
+  3. **Lớp phủ Phụ đề (Overlay) & Thanh công cụ nổi**:
+     - Cửa sổ hiển thị phụ đề tiếng Việt có nền khung trong suốt (`Color.TRANSPARENT`), gắn cứng cờ `FLAG_NOT_TOUCHABLE | FLAG_NOT_FOCUSABLE` để mọi thao tác chạm trong game/video trên điện thoại và BlueStacks đều xuyên qua 100%.
+     - Thanh công cụ nhỏ gọn hiển thị thông số **`OCR: XXms | Dịch: YYms | Tổng: ZZms`** cùng nút chọn **VÙNG** phụ đề (mặc định ở 1/3 dưới màn hình) và nút Tạm dừng / Dừng.
+
 - **Visual Identity & Theme**:
-  - *Aesthetic Direction*: Giữ vững phong cách Dark Utility hiện đại, sắc nét và tập trung vào thông số độ trễ thời gian thực.
-  - *Color Palette & Mood*: Nền tối sâu (`#0B1218`), bề mặt thẻ (`#14212B`), điểm nhấn xanh bạc hà (`#6EE7C7`) cho trạng thái khớp tức thì `< 1ms`, và cam hổ phách (`#F0B976`) cho cảnh báo hoặc trạng thái tải.
-  - *Typography & Hierarchy*: Hiển thị rõ ràng thời gian từng chặng (`OCR ms • Kho nạp sẵn <1ms / Cục bộ ms • Tổng khung→vẽ ms`) ngay trên thẻ phiên dịch và thanh phản hồi nổi.
-- **Interactive Feedback & Motion**:
-  - Hiển thị huy hiệu trạng thái số lượng câu hội thoại tiếng Trung đã nạp sẵn và số lượt khớp tức thì trong phiên dịch.
-  - Cho phép thử nhanh (Test thử câu tiếng Trung) hoặc tra cứu nhanh kho câu nạp sẵn ngay trong mục cài đặt.
+  - *Aesthetic Direction*: Utilitarian Cyber-Cinema Dark — tối giản, sắc nét, ưu tiên khả năng đọc nhanh và theo dõi thông số kỹ thuật (telemetry) thời gian thực.
+  - *Color Palette & Mood*: Nền tối sâu (`#0B1218`), bề mặt thẻ (`#14212B`), điểm nhấn Xanh Ngọc Bạc Hà (`#6EE7C7`) cho trạng thái tốc độ cao ≤ 1s, và Vàng Hổ Phách (`#F0B976`) cho chỉ số cảnh báo.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Kiến trúc đối chiếu 3 lớp cho Kho Hội thoại Tiếng Trung (`< 1ms`)**
-  - *Chosen Approach*: Kết hợp (1) **Khớp chính xác sau chuẩn hóa** (bỏ dấu câu `，。！？…—~「」『』` và khoảng trắng thừa, đồng bộ Giản thể/Phồn thể phổ biến), (2) **Ghép vế câu phân tách bằng dấu câu** (ví dụ câu gồm 2 mệnh đề ngăn bởi dấu phẩy hoặc khoảng trắng như `等一下，我马上来` sẽ ghép tức thì từ `等一下` + `我马上来`), và (3) **Khớp mẫu câu động (Template Patterns)** cho các cấu trúc câu thoại lặp lại (`别[X]了`, `你是谁`, `怎么回事`, `[X]大人`, `[X]师兄`, v.v.), đồng thời giữ lại dấu cảm thán/nghi vấn tương ứng ở đầu ra tiếng Việt.
-  - *Why*: Phụ đề phim và truyện tranh thường ghép 2 câu ngắn trên cùng một dòng hoặc thay đổi dấu chấm than/dấu hỏi. Cơ chế ghép vế câu và chuẩn hóa giúp tăng tỷ lệ trúng (hit-rate) lên gấp nhiều lần so với chỉ so khớp chuỗi cứng, trong khi vẫn giữ thời gian chạy dưới `1ms`.
-  - *Alternatives Considered*: Chỉ khớp chuỗi chính xác 100% (bị trượt khi OCR dính hoặc mất dấu chấm câu) hoặc thay thế từng từ rời rạc cho mọi câu dài (dễ gây dịch word-by-word thiếu tự nhiên).
-- **Decision 2: Bỏ Debounce (`0ms`) cho dịch cục bộ & Thu phóng ảnh OCR thông minh**
-  - *Chosen Approach*:
-    - Kiểm tra kho hội thoại nạp sẵn và bộ nhớ cache **trước** bước chờ debounce. Nếu khớp toàn bộ hoặc các mệnh đề đều nằm trong kho, vẽ ngay lập tức (`0ms` debounce).
-    - Khi ở chế độ Độc lập trên điện thoại kết hợp Turbo, giảm thời gian chờ ổn định chữ xuống `0ms` cho lần xuất hiện đầu tiên và chỉ giữ ngưỡng chống nháy nhỏ (`35ms`) khi chữ đang biến đổi liên tục từng khung hình.
-    - Với ảnh vùng phụ đề (ROI) có chiều rộng lớn hơn `960px` (hoặc chiều cao lớn), tự động thu phóng ảnh bằng bộ lọc nhanh trước khi đưa vào ML Kit OCR và quy đổi ngược tọa độ khung chữ về kích thước gốc.
-  - *Why*: Thời gian chạy ML Kit OCR tỷ lệ thuận với số điểm ảnh. Giảm kích thước vùng ảnh phụ đề quá lớn giúp cắt giảm 30–50ms mỗi khung hình mà không ảnh hưởng độ chính xác nhận diện chữ Hán cỡ phụ đề.
+- **Decision 1: Lưu trữ Kho Phụ Đề trong SQLite có chỉ mục B-Tree + `LruCache(300)` thay vì `Map` trên RAM**
+  - *Chosen Approach*: Đóng gói kho câu thoại Tiếng Trung trong tệp `assets/zh_vi_subtitles.tsv`, khởi tạo bảng SQLite `subtitle_bank` với chỉ mục `CREATE INDEX idx_zh_hash ON subtitle_bank(normalized_hash)` trên `Dispatchers.IO`, kết hợp `LruCache<String, String>(300)` trên RAM.
+  - *Why*: Ngăn chặn hoàn toàn lỗi tràn bộ nhớ (`OutOfMemoryError`) khi kho phụ đề mở rộng hàng nghìn câu thông qua cơ chế tự học (`Self-Learning Cache`), giữ mức sử dụng RAM của bộ nhớ đệm luôn dưới 2MB mà vẫn đạt tốc độ truy vấn < 5ms.
+- **Decision 2: Cắt đúng vùng chọn phụ đề (ROI Cropping) + Chuẩn hóa `rowStride`/`pixelStride` + Downscale chiều cao `160px–240px` + Frame Diffing**
+  - *Chosen Approach*: Trích xuất trực tiếp vùng chữ nhật phụ đề (mặc định 1/3 dưới màn hình) từ `Image.Plane` bằng công thức `offset = y * rowStride + x * pixelStride`, so sánh độ lệch pixel (Frame Diffing) với khung hình trước đó trong 300ms, và thu nhỏ chiều cao bitmap vùng cắt về `160px–240px` trước khi đưa vào `ChineseTextRecognizer`.
+  - *Why*: Trên trình giả lập BlueStacks, `rowStride` thường chứa phần đệm (padding) lớn hơn `width * pixelStride`. Xử lý chính xác `rowStride` giúp ảnh không bị méo/đen hình, đồng thời chiều cao `160px–240px` giảm thời gian ML Kit Chinese OCR xuống chỉ còn **40ms–80ms**.
+- **Decision 3: Tinh gọn cuộc gọi Gemini API (< 600ms) với `thinkingBudget = 0` và ngữ cảnh 1 câu liền trước**
+  - *Chosen Approach*: Gọi trực tiếp REST API với cấu hình `thinkingBudget = 0`, giữ ấm kết nối bằng `OkHttpClient` HTTP/2 Connection Pool (Keep-Alive 5 phút), dùng System Prompt siêu gọn (< 40 tokens) và chỉ gửi kèm tối đa 1 câu thoại liền trước.
+  - *Why*: Loại bỏ hoàn toàn thời gian trễ sinh token suy nghĩ ẩn (thinking tokens) và giảm kích thước payload, đảm bảo tổng thời gian `OCR (50ms) + Gemini (350–550ms)` luôn nằm dưới ngưỡng **1000ms**.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-- **Architecture & Component Diagram**:
+### Architecture & Pipeline Diagram
 
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                   DỊCH TỰ ĐỘNG ĐỘC LẬP TRÊN ĐIỆN THOẠI                     │
-└─────────────────────────────────────┬──────────────────────────────────────┘
-                                      │
-                                      ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ 1. THU MÀN HÌNH & THU PHÓNG ẢNH OCR THÔNG MINH (Adaptive ROI Downscaling)  │
-│  • Chỉ cắt đúng dải phụ đề (ROI) từ bộ đệm khung hình phần cứng            │
-│  • Tự động thu gọn kích thước ảnh nếu bề ngang > 960px (giảm 35-50% ms OCR)│
-│  • Bộ nhận diện chữ Hán & ML Kit được làm ấm sẵn (Pre-warmed) trong RAM    │
-└─────────────────────────────────────┬──────────────────────────────────────┘
-                                      │
-                                      ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ 2. BỘ ĐỐI CHIẾU KHO HỘI THOẠI TIẾNG TRUNG NẠP SẴN (< 1ms, 0ms Debounce)    │
-│  ┌─────────────────────────┐  ┌────────────────────────┐  ┌──────────────┐ │
-│  │ Lớp 1: Khớp chuẩn hóa   │→ │ Lớp 2: Ghép mệnh đề    │→ │ Lớp 3: Mẫu   │ │
-│  │ (Bỏ dấu câu, Giản/Phồn) │  │ (Tách theo dấu phẩy/   │  │ câu thoại &  │ │
-│  │ Phim, Truyện, Game      │  │ khoảng trắng & nối câu)│  │ cụm từ cố định│ │
-│  └─────────────────────────┘  └────────────────────────┘  └──────────────┘ │
-└──────────────────┬──────────────────────────────────────┬──────────────────┘
-                   │ Khớp hoàn toàn (< 1ms)               │ Chưa có trong kho
-                   ▼                                      ▼
-┌──────────────────────────────────────┐ ┌───────────────────────────────────┐
-│ HIỂN THỊ TỨC THÌ LÊN LỚP PHỦ (0ms)   │ │ 3. DỊCH CỤC BỘ ML KIT ĐÃ LÀM ẤM   │
-│  • Vẽ ngay lập tức trên khung OCR    │ │  • Dịch ngay lập tức (Zero-Wait   │
-│    hiện tại, không gọi AI            │ │    Initial Debounce trong Turbo)  │
-│  • Lưu vào RAM LRU Cache             │ │  • Áp dụng cụm từ cố định tiếng   │
-│                                      │ │    Trung & tinh chỉnh Gemini      │
-└──────────────────────────────────────┘ └───────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                 ScreenCaptureService (HandlerThread "OCRFrames")             │
+│  ImageReader (maxImages = 2, RGBA_8888, AtomicBoolean isProcessing)          │
+│       │                                                                      │
+│       ▼                                                                      │
+│  1. ROI Cropping (1/3 dưới màn hình, tính chuẩn rowStride & pixelStride)     │
+│       │                                                                      │
+│       ▼                                                                      │
+│  2. Frame Diffing (Độ lệch pixel < ngưỡng trong 300ms ──► Bỏ qua OCR ngay)   │
+│       │ (Có thay đổi)                                                        │
+│       ▼                                                                      │
+│  3. ROI Downscaling (Thu nhỏ chiều cao vùng phụ đề về 160px–240px)           │
+│       │                                                                      │
+│       ▼                                                                      │
+│  4. ML Kit Chinese OCR (Giản thể & Phồn thể · 40ms–80ms)                     │
+└───────┬──────────────────────────────────────────────────────────────────────┘
+        │ Văn bản chữ Hán (ZH)
+        ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                   StandaloneTranslator (2 Chế Độ Độc Lập)                    │
+│                                                                              │
+│  ┌────────────────────────────────────┐  ┌────────────────────────────────┐  │
+│  │ CHẾ ĐỘ 1: KHO PHỤ ĐỀ + GEMINI      │  │ CHẾ ĐỘ 2: CHỈ DÙNG GEMINI      │  │
+│  │ 1. LruCache(300) (< 0.1ms)         │  │ 1. LruCache(100) câu đang hiện │  │
+│  │ 2. SQLite B-Tree (idx_zh_hash <5ms)│  │ 2. Gửi câu ZH + 1 câu ngữ cảnh │  │
+│  │    (Exact Match + Ghép cụm từ)     │  │    liền trước lên Gemini API   │  │
+│  │ 3. Nếu chưa có ──► Gọi Gemini API  │  │    (thinkingBudget = 0)        │  │
+│  │    & tự lưu ngầm vào SQLite        │  │                                │  │
+│  │    (Self-Learning Cache)           │  │                                │  │
+│  └─────────────────┬──────────────────┘  └───────────────┬────────────────┘  │
+└────────────────────┼─────────────────────────────────────┼───────────────────┘
+                     └──────────────────┬──────────────────┘
+                                        ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        TranslationOverlay (BlueStacks/Android)               │
+│  • Cửa sổ Phụ đề: Color.TRANSPARENT + FLAG_NOT_TOUCHABLE | FLAG_NOT_FOCUSABLE│
+│  • Thanh trạng thái: "OCR: 52ms | Dịch: 310ms | Tổng: 362ms"                 │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Data Model & State**:
-  - **Kho Hội thoại Tiếng Trung Nạp sẵn (Preloaded Chinese Dialogue Corpus)**:
-    - Phân nhóm theo ngữ cảnh phổ biến:
-      - *Giao tiếp & Hội thoại hàng ngày trong phim*: Chào hỏi, hỏi đáp, đồng ý/từ chối, cảm xúc, thúc giục (`等一下`, `怎么回事`, `你没事吧`, `快走`, `别过来`, `我知道了`, `开玩笑的吧`, `到底怎么了`, `放开我`, `跟我们走一趟`, v.v.).
-      - *Cổ trang, Kiếm hiệp & Tu tiên (Manhua / Donghua)*: Xưng hô, chiêu thức, cảnh giới, mệnh lệnh (`师兄`, `师父`, `掌门`, `陛下`, `找死`, `手下留情`, `多谢前辈`, `不知死活`, `突破境界`, `遵命`, v.v.).
-      - *Truyện tranh Hiện đại, Tổng tài, Học đường & Game*: Thoại kịch tính, trạng thái hệ thống, nhiệm vụ (`不可能`, `为什么会这样`, `难以置信`, `任务完成`, `继续`, `设置`, `确认`, `取消`, v.v.).
-    - Hỗ trợ đồng thời chữ Hán Giản thể và các biến thể Phồn thể thường gặp trên phim/truyện Đài Loan, Hồng Kông.
-- **Interactive Component & State Mapping**:
-  - **Công tắc Kho Hội thoại Tiếng Trung Nạp sẵn**: Cho phép bật/tắt kho nạp sẵn và hiển thị số lượng câu/mẫu câu đang kích hoạt.
-  - **Bộ kiểm tra & tra cứu thử nhanh trong Cài đặt**: Ô nhập thử một câu thoại tiếng Trung bất kỳ để xem ngay kết quả khớp `< 1ms` từ kho hội thoại nạp sẵn hoặc từ điển cá nhân.
-  - **Bộ đếm Khớp tức thì (Instant Phrase Hits)**: Hiển thị trực quan trên màn hình chính số lần phụ đề được dịch tức thì từ kho nạp sẵn và bộ nhớ đệm mà không cần chờ mô hình dịch.
+### Data Model & SQLite Anti-OOM Schema
+
+- **Bảng `subtitle_bank` (SQLite trên `Dispatchers.IO`)**:
+  - `id INTEGER PRIMARY KEY AUTOINCREMENT`
+  - `normalized_hash INTEGER NOT NULL` (Mã băm 64-bit FNV-1a / CRC của chuỗi chữ Hán đã chuẩn hóa Phồn → Giản và lược bỏ dấu câu)
+  - `normalized_zh TEXT NOT NULL UNIQUE` (Chuỗi chữ Hán chuẩn hóa để kiểm tra chống đụng độ mã băm)
+  - `vi_text TEXT NOT NULL` (Bản dịch tiếng Việt chuẩn ngữ cảnh)
+  - `category TEXT NOT NULL` (`preloaded` hoặc `learned` cho các câu tự học từ Gemini)
+  - `updated_at INTEGER NOT NULL`
+  - **Chỉ mục B-Tree bắt buộc**:
+    - `CREATE INDEX idx_zh_hash ON subtitle_bank(normalized_hash)`
+- **Bộ đệm RAM**:
+  - Chế độ 1 (Hybrid): `android.util.LruCache<String, String>(300)` lưu tối đa 300 câu vừa tra cứu.
+  - Chế độ 2 (Gemini Direct): `android.util.LruCache<String, String>(100)` lưu 100 câu gần nhất để chống gọi lặp API khi phụ đề đứng yên.
+
+### Verification & Automated Benchmark Suite
+
+- Bộ kiểm thử tự động (`ChineseSubtitleBenchmarkTest`) xác minh trực tiếp trước khi hoàn thành:
+  1. **Tốc độ tra kho SQLite (`idx_zh_hash`) + `LruCache(300)`**: Đo thời gian tra cứu chính xác và ghép cụm từ trên kho phụ đề Tiếng Trung đạt **< 10ms** và mức tăng bộ nhớ RAM **< 5MB**.
+  2. **Tốc độ & Ngữ cảnh 10 câu thoại phim Tiếng Trung đa dạng** (cổ trang, tu tiên, kiếm hiệp, hiện đại, câu ngắn, câu dài có ngữ cảnh nối tiếp): Xác nhận bản dịch tiếng Việt tự nhiên, đúng xưng hô (`Sư tôn`, `Sư huynh`, `Bệ hạ`, `Cô nương`...), tự động lưu vào `Self-Learning Cache` ở Chế độ 1, và tổng thời gian xử lý trung bình (`OCR + Tra kho / Gemini`) đạt **≤ 1000ms**.

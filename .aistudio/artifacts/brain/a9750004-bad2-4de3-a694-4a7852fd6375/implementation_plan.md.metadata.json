@@ -1,6 +1,6 @@
 {
-  "summary":  "Kế hoạch tối ưu hóa độ trễ siêu tốc (< 100–350ms) cho chế độ dịch tự động độc lập trên điện thoại và nạp sẵn kho câu hội thoại tiếng Trung phổ biến trong phim Hoa ngữ, hoạt hình, truyện tranh và game.",
-  "updatedAt":  "2026-10-24T15:11:51.752086715Z",
+  "summary":  "Implementation plan for Standalone Chinese-to-Vietnamese (ZH -> VI) Live OCR Subtitle Translator on Android & BlueStacks with <= 1000ms End-to-End Latency, Anti-OOM SQLite B-Tree Subtitle Bank + 300-entry LruCache, 2 Standalone Modes (Hybrid Bank + Gemini vs Gemini Direct), ROI Row-Stride Cropping + 160-240px Downscaling + Frame Diffing, Touch Pass-Through Overlay, and Automated Latency & Memory Benchmarks.",
+  "updatedAt":  "2026-10-25T02:32:07.668753131Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

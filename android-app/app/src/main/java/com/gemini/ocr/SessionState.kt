@@ -10,6 +10,9 @@ data class TranslationBackendState(
     val experimentalCliEnabled: Boolean = false,
 ) {
     val badge: String get() = when {
+        mode == "hybrid_gemini" -> "Chế độ 1: Kho Phụ Đề + Gemini (Hybrid Siêu Tốc · <5ms + Tự học)"
+        mode == "gemini_direct" -> "Chế độ 2: Chỉ dùng Gemini (Gemini Direct · LruCache 100)"
+        mode == "bank_only" -> "Chế độ 1: Kho Phụ Đề + Gemini (Hybrid Siêu Tốc)"
         mode == "standalone_hybrid" -> "Độc lập trên điện thoại • ML Kit (<150ms) + Gemini Flash-Lite"
         mode == "standalone_mlkit" -> "Độc lập ngoại tuyến • ML Kit On-Device (<150ms)"
         mode == "standalone_gemini" -> "Độc lập trên điện thoại • Gemini Flash-Lite trực tiếp"
@@ -33,20 +36,26 @@ data class TranslationBackendState(
 object SessionState {
     val running = MutableStateFlow(false)
     val paused = MutableStateFlow(false)
-    val status = MutableStateFlow("Sẵn sàng kết nối")
+    val status = MutableStateFlow("Sẵn sàng dịch độc lập Tiếng Trung → Tiếng Việt (≤ 1s)")
     val connected = MutableStateFlow(false)
-    val standaloneActive = MutableStateFlow(false)
-    val offlineModelStatus = MutableStateFlow("Gói ngoại tuyến tự động tải khi cần")
-    val provider = MutableStateFlow("")
+    val standaloneActive = MutableStateFlow(true)
+    val offlineModelStatus = MutableStateFlow("Kho phụ đề Tiếng Trung SQLite (idx_zh_hash) + LruCache(300) sẵn sàng")
+    val provider = MutableStateFlow("standalone")
     val backend = MutableStateFlow(TranslationBackendState())
     val latency = MutableStateFlow(0L)
     val instantMs = MutableStateFlow(0L)
     val blocks = MutableStateFlow(0)
     val cacheHits = MutableStateFlow(0)
     val preloadedHits = MutableStateFlow(0)
+    val fuzzyHits = MutableStateFlow(0)
+    val savedApiCalls = MutableStateFlow(0)
+    val noiseFiltered = MutableStateFlow(0)
+    val ocrCorrectedCount = MutableStateFlow(0)
+    val bankSize = MutableStateFlow(0)
+    val activeModelName = MutableStateFlow("gemini-3.1-flash-lite-preview")
     val ocrMs = MutableStateFlow(0L)
     val ocrFrames = MutableStateFlow(0)
-    val ocrArea = MutableStateFlow(100)
+    val ocrArea = MutableStateFlow(30)
     val activityVisible = MutableStateFlow(false)
     val overlayVisible = MutableStateFlow(false)
     val lastOcr = MutableStateFlow("")
@@ -54,4 +63,14 @@ object SessionState {
     val timings = MutableStateFlow("")
     val networkRtt = MutableStateFlow(0L)
     val frameToDraw = MutableStateFlow(0L)
+
+    /**
+     * Requirement 6: Formats real-time status bar latency telemetry (`OCR: 55ms | Dịch: 320ms | Tổng: 375ms`).
+     */
+    fun formatCompactTelemetry(ocrMs: Long, translateMs: Long, totalMs: Long = ocrMs + translateMs): String {
+        val safeOcr = ocrMs.coerceAtLeast(1L)
+        val safeTranslate = translateMs.coerceAtLeast(0L)
+        val safeTotal = totalMs.coerceAtLeast(safeOcr + safeTranslate)
+        return "OCR: ${safeOcr}ms | Dịch: ${safeTranslate}ms | Tổng: ${safeTotal}ms"
+    }
 }

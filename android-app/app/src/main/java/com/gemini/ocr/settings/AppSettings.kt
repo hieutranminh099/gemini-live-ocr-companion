@@ -19,73 +19,126 @@ class AppSettings(context: Context) {
     var pin: String
         get() = prefs.getString("pin", "")!!
         set(value) { prefs.edit().putString("pin", value).apply() }
+
+    /** Requirement 1: Locked to Chinese ("zh" -> Vietnamese) only. */
     var language: String
-        get() = prefs.getString("language", "ja")!!
-        set(value) { prefs.edit().putString("language", value).apply() }
+        get() = "zh"
+        set(@Suppress("UNUSED_PARAMETER") value) {
+            prefs.edit().putString("language", "zh").apply()
+        }
+
     var mode: String
-        get() = prefs.getString("mode", "smart")!!
+        get() = prefs.getString("mode", "fast")!!
         set(value) { prefs.edit().putString("mode", value).apply() }
     var profile: String
-        get() = prefs.getString("profile", "game")!!
+        get() = prefs.getString("profile", "manga")!!
         set(value) { prefs.edit().putString("profile", value).apply() }
+
+    /** Requirement 4.1: Default region is "subtitle" (ROI cropping in bottom 1/3 of screen). */
     var region: String
-        get() = prefs.getString("region", "full")!!
+        get() = prefs.getString("region", "subtitle")!!
         set(value) { prefs.edit().putString("region", value).apply() }
     val subtitleFocus: Boolean get() = region == "subtitle"
     var trackSourceRow: Boolean
         get() = prefs.getBoolean("trackSourceRow", false)
         set(value) { prefs.edit().putBoolean("trackSourceRow", value).apply() }
-    // A full-display projection also captures our windows. Keep automatic subtitles
-    // outside the OCR strip so they can remain visible while new source text is read.
+
     val adjacentSubtitles: Boolean get() = subtitleFocus && subtitleCapture == "auto" &&
         (android.os.Build.VERSION.SDK_INT < 34 || fullScreen)
     var subtitleCapture: String
-        get() = prefs.getString("subtitleCapture", "frame")!!
+        get() = prefs.getString("subtitleCapture", "auto")!!
         set(value) { prefs.edit().putString("subtitleCapture", value).apply() }
-    var subtitleRegion: android.graphics.RectF
-        get() = android.graphics.RectF(prefs.getFloat("roiLeft", .08f), prefs.getFloat("roiTop", .78f),
-            prefs.getFloat("roiRight", .92f), prefs.getFloat("roiBottom", .96f))
-        set(value) { prefs.edit().putFloat("roiLeft", value.left).putFloat("roiTop", value.top)
-            .putFloat("roiRight", value.right).putFloat("roiBottom", value.bottom).apply() }
 
-    /** "auto" (use PC if connected, otherwise standalone on phone), "standalone" (phone only), or "pc" (PC only). */
+    /** Requirement 4.1: Default subtitle ROI in bottom 1/3 of screen (top = 0.67f, bottom = 0.94f). */
+    var subtitleRegion: android.graphics.RectF
+        get() = android.graphics.RectF(
+            prefs.getFloat("roiLeft", .06f),
+            prefs.getFloat("roiTop", .67f),
+            prefs.getFloat("roiRight", .94f),
+            prefs.getFloat("roiBottom", .94f)
+        )
+        set(value) {
+            prefs.edit()
+                .putFloat("roiLeft", value.left)
+                .putFloat("roiTop", value.top)
+                .putFloat("roiRight", value.right)
+                .putFloat("roiBottom", value.bottom)
+                .apply()
+        }
+
+    /** Standalone on-device mode by default ("standalone"). */
     var connectionMode: String
-        get() = prefs.getString("connectionMode", "auto")!!
+        get() = prefs.getString("connectionMode", "standalone")!!
         set(value) { prefs.edit().putString("connectionMode", value).apply() }
 
-    /** "hybrid" (ML Kit <150ms + Gemini Flash-Lite refinement), "mlkit" (offline on-device), or "gemini" (direct Gemini API). */
-    var standaloneEngine: String
-        get() = prefs.getString("standaloneEngine", "hybrid")!!
-        set(value) { prefs.edit().putString("standaloneEngine", value).apply() }
+    /**
+     * Requirement 2: 2 Clear Standalone Modes:
+     * - "hybrid_gemini": Chế độ 1 — Kho Phụ Đề + Gemini (Hybrid Siêu Tốc: Tra kho <5ms + Gemini + Tự học)
+     * - "gemini_direct": Chế độ 2 — Chỉ dùng Gemini (Gemini Direct: Gửi kèm ngữ cảnh + LruCache 100)
+     */
+    var translationMode: String
+        get() {
+            val raw = prefs.getString("translationMode", null)
+            return when (raw) {
+                "gemini_direct" -> "gemini_direct"
+                "hybrid_gemini" -> "hybrid_gemini"
+                "bank_only" -> "hybrid_gemini"
+                else -> "hybrid_gemini"
+            }
+        }
+        set(value) {
+            val normalized = when (value) {
+                "gemini_direct", "direct" -> "gemini_direct"
+                else -> "hybrid_gemini"
+            }
+            prefs.edit()
+                .putString("translationMode", normalized)
+                .putString("standaloneEngine", normalized)
+                .apply()
+        }
 
-    /** Sub-1s pipeline optimizations: 0ms/25ms settle debounce + immediate on-device draw without extra frame round-trip. */
+    var standaloneEngine: String
+        get() = translationMode
+        set(value) {
+            translationMode = value
+        }
+
+    var hybridCharThreshold: Int
+        get() = prefs.getInt("hybridCharThreshold", 15).coerceIn(5, 60)
+        set(value) { prefs.edit().putInt("hybridCharThreshold", value.coerceIn(5, 60)).apply() }
+
+    var ocrPreCorrection: Boolean
+        get() = prefs.getBoolean("ocrPreCorrection", true)
+        set(value) { prefs.edit().putBoolean("ocrPreCorrection", value).apply() }
+
     var turboLatency: Boolean
         get() = prefs.getBoolean("turboLatency", true)
         set(value) { prefs.edit().putBoolean("turboLatency", value).apply() }
 
-    /** Enables < 1ms instant lookup against the preloaded Chinese movie, drama, manhua & game dialogue corpus. */
     var preloadedDialogueEnabled: Boolean
-        get() = prefs.getBoolean("preloadedDialogueEnabled", true)
+        get() = translationMode == "hybrid_gemini" && prefs.getBoolean("preloadedDialogueEnabled", true)
         set(value) { prefs.edit().putBoolean("preloadedDialogueEnabled", value).apply() }
 
-    /** Downscales oversized subtitle ROI bitmaps before ML Kit OCR to cut OCR latency by 35-50%. */
     var fastOcrDownscale: Boolean
         get() = prefs.getBoolean("fastOcrDownscale", true)
         set(value) { prefs.edit().putBoolean("fastOcrDownscale", value).apply() }
 
-    /** Local personal glossary stored on the phone, formatted as "source = target" per line. */
+    var costSavingMode: Boolean
+        get() = prefs.getBoolean("costSavingMode", true)
+        set(value) { prefs.edit().putBoolean("costSavingMode", value).apply() }
+
+    var stabilizeBeforeCloud: Boolean
+        get() = prefs.getBoolean("stabilizeBeforeCloud", false)
+        set(value) { prefs.edit().putBoolean("stabilizeBeforeCloud", value).apply() }
+
     var localGlossary: String
         get() = prefs.getString("localGlossary", "")!!
         set(value) { prefs.edit().putString("localGlossary", value).apply() }
 
     val standaloneBadge: String
-        get() = when (standaloneEngine) {
-            "mlkit" -> "Độc lập ngoại tuyến • Kho thoại <1ms + ML Kit (<150ms)"
-            "gemini" -> "Độc lập trên điện thoại • Kho thoại <1ms + Gemini Flash-Lite"
-            else -> if (effectiveStandaloneApiKey().isNotBlank())
-                "Độc lập Siêu tốc • Kho thoại <1ms + ML Kit + Gemini"
-            else
-                "Độc lập Siêu tốc • Kho thoại <1ms + ML Kit (<150ms)"
+        get() = when (translationMode) {
+            "gemini_direct" -> "Chế độ 2: Chỉ dùng Gemini (Gemini Direct · Ngữ cảnh 1 câu + LruCache 100)"
+            else -> "Chế độ 1: Kho Phụ Đề + Gemini (Hybrid Siêu Tốc · SQLite <5ms + Tự học)"
         }
 
     fun useSubtitlePreset() {
@@ -101,7 +154,7 @@ class AppSettings(context: Context) {
         get() = prefs.getString("overlay", "subtitle")!!
         set(value) { prefs.edit().putString("overlay", value).apply() }
     var fontSize: Int
-        get() = prefs.getInt("font", 18)
+        get() = prefs.getInt("font", 20)
         set(value) { prefs.edit().putInt("font", value).apply() }
     var opacity: Float
         get() = prefs.getFloat("opacity", .9f)
@@ -110,7 +163,7 @@ class AppSettings(context: Context) {
         get() = prefs.getInt("textColor", android.graphics.Color.WHITE)
         set(value) { prefs.edit().putInt("textColor", value).apply() }
     var interval: Long
-        get() = prefs.getLong("interval", 900)
+        get() = prefs.getLong("interval", 150)
         set(value) { prefs.edit().putLong("interval", value).apply() }
     var subtitleY: Float
         get() = prefs.getFloat("subtitleY", .78f)
