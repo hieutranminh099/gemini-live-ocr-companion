@@ -2,9 +2,6 @@ package com.gemini.ocr.ocr
 
 import android.graphics.Bitmap
 import android.graphics.Rect
-import com.gemini.ocr.SessionState
-import com.gemini.ocr.network.CostOptimizationEngine
-import com.gemini.ocr.network.SelfLearningDatabase
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
@@ -22,14 +19,13 @@ data class OcrBlock(val id: String, val text: String, val rect: Rect) {
             .put("width", rect.width().toDouble() / width).put("height", rect.height().toDouble() / height))
 }
 
-class OcrProcessor(private val language: String) : AutoCloseable {
+class OcrProcessor(language: String) : AutoCloseable {
     private val recognizer: TextRecognizer = createRecognizer(language)
 
     suspend fun process(
         bitmap: Bitmap,
         retainSourceFragments: Boolean = false,
-        fastDownscale: Boolean = true,
-        ocrPreCorrection: Boolean = true
+        fastDownscale: Boolean = false
     ): List<OcrBlock> {
         val maxDim = maxOf(bitmap.width, bitmap.height)
         val scale = if (fastDownscale && maxDim > MAX_OCR_DIMENSION) {
@@ -47,7 +43,7 @@ class OcrProcessor(private val language: String) : AutoCloseable {
         val result = try {
             recognizer.process(InputImage.fromBitmap(targetBitmap, 0)).await()
         } finally {
-            if (targetBitmap !== bitmap && !targetBitmap.isRecycled) {
+            if (targetBitmap !== bitmap) {
                 targetBitmap.recycle()
             }
         }
@@ -65,22 +61,13 @@ class OcrProcessor(private val language: String) : AutoCloseable {
             } else {
                 rawRect
             }
-            val rawNormalized = Normalizer.normalize(block.text, Normalizer.Form.NFKC).replace(Regex("\\s+"), " ").trim()
-            val text = if (ocrPreCorrection) {
-                SelfLearningDatabase.preprocessAndCorrectOcr(rawNormalized)
-            } else {
-                rawNormalized
-            }
+            val text = Normalizer.normalize(block.text, Normalizer.Form.NFKC).replace(Regex("\\s+"), " ").trim()
             // ML Kit sometimes does not supply confidence, so reject only known low-confidence lines.
             val confidence = block.confidence?.toDouble() ?: Double.NaN
             val singleCjk = text.length == 1 && Character.UnicodeScript.of(text[0].code) in setOf(
                 Character.UnicodeScript.HAN, Character.UnicodeScript.HIRAGANA, Character.UnicodeScript.KATAKANA, Character.UnicodeScript.HANGUL)
             val fragment = retainSourceFragments && text.any { it.isDigit() || it == '_' } &&
                 text.all { it.isDigit() || it == '_' || it == '.' || it == '-' || it.isWhitespace() }
-            if (CostOptimizationEngine.isOcrNoise(text, language, retainSourceFragments) && !singleCjk) {
-                SessionState.noiseFiltered.value++
-                return@mapNotNull null
-            }
             if ((text.length < 2 && !singleCjk && !fragment) || (text.none { it.isLetter() } && !fragment) || text.length > 2000 || (!confidence.isNaN() && confidence < .35)) return@mapNotNull null
             val clipped = Rect(rect)
             if (!clipped.intersect(0, 0, bitmap.width, bitmap.height) || clipped.width() < 3 || clipped.height() < 3) return@mapNotNull null

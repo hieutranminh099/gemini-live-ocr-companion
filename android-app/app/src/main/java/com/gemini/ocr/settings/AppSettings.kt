@@ -48,47 +48,15 @@ class AppSettings(context: Context) {
         set(value) { prefs.edit().putFloat("roiLeft", value.left).putFloat("roiTop", value.top)
             .putFloat("roiRight", value.right).putFloat("roiBottom", value.bottom).apply() }
 
-    /** Standalone on-device mode by default ("standalone"). */
+    /** "auto" (use PC if connected, otherwise standalone on phone), "standalone" (phone only), or "pc" (PC only). */
     var connectionMode: String
-        get() = prefs.getString("connectionMode", "standalone")!!
+        get() = prefs.getString("connectionMode", "auto")!!
         set(value) { prefs.edit().putString("connectionMode", value).apply() }
 
-    /**
-     * Simplified 2 Translation Modes:
-     * - "bank_only": Chế độ 1 — Dịch thuần từ Kho (Kho thoại SQLite Offline + ML Kit Offline, 0 API calls)
-     * - "hybrid_gemini": Chế độ 2 — Kho kết hợp Gemini (Hybrid thông minh với ngưỡng ký tự linh hoạt)
-     */
-    var translationMode: String
-        get() {
-            val raw = prefs.getString("translationMode", null)
-            if (raw == "bank_only" || raw == "hybrid_gemini") return raw
-            return if (prefs.getString("standaloneEngine", "hybrid") == "mlkit") "bank_only" else "hybrid_gemini"
-        }
-        set(value) {
-            val normalized = if (value == "bank_only" || value == "mlkit") "bank_only" else "hybrid_gemini"
-            val engine = if (normalized == "bank_only") "mlkit" else "hybrid"
-            prefs.edit()
-                .putString("translationMode", normalized)
-                .putString("standaloneEngine", engine)
-                .apply()
-        }
-
-    /** Synchronized with [translationMode]: "mlkit" for Mode 1 (Bank Offline) or "hybrid" for Mode 2 (Bank + Gemini Flash-Lite). */
+    /** "hybrid" (ML Kit <150ms + Gemini Flash-Lite refinement), "mlkit" (offline on-device), or "gemini" (direct Gemini API). */
     var standaloneEngine: String
-        get() = if (translationMode == "bank_only") "mlkit" else "hybrid"
-        set(value) {
-            translationMode = if (value == "mlkit" || value == "bank_only") "bank_only" else "hybrid_gemini"
-        }
-
-    /** Flexible character length threshold for Mode 2 (Kho kết hợp Gemini), default 15 characters. */
-    var hybridCharThreshold: Int
-        get() = prefs.getInt("hybridCharThreshold", 15).coerceIn(5, 60)
-        set(value) { prefs.edit().putInt("hybridCharThreshold", value.coerceIn(5, 60)).apply() }
-
-    /** Enables OCR Pre-correction using common OCR error rules in the SQLite Self-Learning Bank. */
-    var ocrPreCorrection: Boolean
-        get() = prefs.getBoolean("ocrPreCorrection", true)
-        set(value) { prefs.edit().putBoolean("ocrPreCorrection", value).apply() }
+        get() = prefs.getString("standaloneEngine", "hybrid")!!
+        set(value) { prefs.edit().putString("standaloneEngine", value).apply() }
 
     /** Sub-1s pipeline optimizations: 0ms/25ms settle debounce + immediate on-device draw without extra frame round-trip. */
     var turboLatency: Boolean
@@ -105,25 +73,19 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("fastOcrDownscale", true)
         set(value) { prefs.edit().putBoolean("fastOcrDownscale", value).apply() }
 
-    /** 5-Tier Gemini Cost Optimization: Fuzzy Match 90-95%, Smart Hybrid gating, compact prompt, 100-250 token cap. */
-    var costSavingMode: Boolean
-        get() = prefs.getBoolean("costSavingMode", true)
-        set(value) { prefs.edit().putBoolean("costSavingMode", value).apply() }
-
-    /** Requires 2-frame OCR stabilization before calling cloud Gemini API (while still allowing instant offline preview). */
-    var stabilizeBeforeCloud: Boolean
-        get() = prefs.getBoolean("stabilizeBeforeCloud", true)
-        set(value) { prefs.edit().putBoolean("stabilizeBeforeCloud", value).apply() }
-
     /** Local personal glossary stored on the phone, formatted as "source = target" per line. */
     var localGlossary: String
         get() = prefs.getString("localGlossary", "")!!
         set(value) { prefs.edit().putString("localGlossary", value).apply() }
 
     val standaloneBadge: String
-        get() = when (translationMode) {
-            "bank_only" -> "Chế độ 1: Dịch thuần từ Kho (SQLite <1ms + ML Kit Offline · 0 token)"
-            else -> "Chế độ 2: Kho kết hợp Gemini Flash-Lite (Ngưỡng ≤ ${hybridCharThreshold} ký tự)"
+        get() = when (standaloneEngine) {
+            "mlkit" -> "Độc lập ngoại tuyến • Kho thoại <1ms + ML Kit (<150ms)"
+            "gemini" -> "Độc lập trên điện thoại • Kho thoại <1ms + Gemini Flash-Lite"
+            else -> if (effectiveStandaloneApiKey().isNotBlank())
+                "Độc lập Siêu tốc • Kho thoại <1ms + ML Kit + Gemini"
+            else
+                "Độc lập Siêu tốc • Kho thoại <1ms + ML Kit (<150ms)"
         }
 
     fun useSubtitlePreset() {

@@ -35,24 +35,30 @@ class MainActivityTest {
     }
     @get:Rule val rules: RuleChain = RuleChain.outerRule(reset).around(compose)
 
-    @Test fun standaloneHomeDisplaysTwoSimplifiedModesAndStartsWithoutPc() {
+    @Test fun unpairedStartGuidesUserToPairingInsteadOfStartingCapture() {
         compose.onNodeWithText("Hiểu mọi\nkhung hình.").assertIsDisplayed()
         screenshot("android-home.png")
-        compose.onNodeWithText("Bật dịch màn hình").assertIsDisplayed()
-        compose.onNodeWithTag("mode_bank_only_card").performScrollTo().assertExists()
-        compose.onNodeWithTag("mode_hybrid_gemini_card").performScrollTo().assertExists()
+        compose.onNodeWithText("Kết nối máy tính").performClick()
+        compose.onNodeWithText("Máy tính của bạn").assertIsDisplayed()
+        compose.onNodeWithText("Ghép cặp an toàn").performScrollTo().assertIsNotEnabled()
     }
-    @Test fun translationBankTabDisplaysSelfLearningRecordsAndOcrPreCorrection() {
-        compose.onNodeWithText("Kho thoại", useUnmergedTree = true).performClick()
-        compose.onNodeWithText("Kho thoại tự học").assertIsDisplayed()
-        compose.onNodeWithTag("dialogue_bank_test_result").assertExists()
+    @Test fun invalidPairLinkShowsActionableError() {
+        compose.onNodeWithText("Kết nối", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("Liên kết gemocr://pair…").performScrollTo().performTextInput("https://invalid.example")
+        compose.onNodeWithText("Đọc liên kết").performScrollTo().performClick()
+        compose.onNodeWithText("Liên kết không hợp lệ. Hãy tạo mã ghép cặp trên Windows.").assertExists()
     }
-    @Test fun switchingBetweenMode1AndMode2UpdatesAppSettings() {
-        val settings = com.gemini.ocr.settings.AppSettings(compose.activity)
-        compose.onNodeWithTag("mode_bank_only_card").performScrollTo().performClick()
-        org.junit.Assert.assertEquals("bank_only", settings.translationMode)
-        compose.onNodeWithTag("mode_hybrid_gemini_card").performScrollTo().performClick()
-        org.junit.Assert.assertEquals("hybrid_gemini", settings.translationMode)
+    @Test fun deepLinkPopulatesPairingButDoesNotAutoAuthorize() {
+        val pin = "ab".repeat(32)
+        compose.runOnIdle {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("gemocr://pair?host=192.168.1.9:8765&pin=$pin&code=123456"))
+            ReflectionHelpers.callInstanceMethod<Unit>(compose.activity, "onNewIntent", ReflectionHelpers.ClassParameter.from(Intent::class.java, intent))
+        }
+        compose.onNodeWithText("Máy tính của bạn").assertIsDisplayed()
+        compose.onNodeWithText("192.168.1.9:8765").assertExists()
+        compose.onNodeWithText(pin).assertExists()
+        compose.onNodeWithText("123456").assertExists()
+        compose.onNodeWithText("Ghép cặp an toàn").performScrollTo().assertIsEnabled()
     }
     @Test fun customizationScreenIsReachableWithoutConnection() {
         compose.onNodeWithText("Tùy chỉnh", useUnmergedTree = true).performClick()

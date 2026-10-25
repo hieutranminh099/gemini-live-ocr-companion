@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for refactoring Gemini Live OCR into a 100% Standalone On-Device Android App with 2 simplified translation modes, Gemini Flash-Lite exclusive cloud engine, strict bitmap recycling/downscaling, and a Self-Learning SQLite Translation Bank with OCR pre-correction.",
-  "updatedAt":  "2026-10-24T16:51:20.918881808Z",
+  "summary":  "Kế hoạch tối ưu hóa độ trễ siêu tốc (< 100–350ms) cho chế độ dịch tự động độc lập trên điện thoại và nạp sẵn kho câu hội thoại tiếng Trung phổ biến trong phim Hoa ngữ, hoạt hình, truyện tranh và game.",
+  "updatedAt":  "2026-10-24T15:11:51.752086715Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
